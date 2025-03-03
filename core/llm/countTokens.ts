@@ -366,6 +366,7 @@ function chatMessageIsEmpty(message: ChatMessage): boolean {
         message.content.trim() === "" &&
         !message.toolCalls
       );
+    case "thinking":
     case "tool":
       return false;
   }
@@ -476,5 +477,6 @@ export {
   pruneLinesFromTop,
   pruneRawPromptFromTop,
   pruneStringFromBottom,
-  pruneStringFromTop,
+  pruneStringFromTop
 };
+
