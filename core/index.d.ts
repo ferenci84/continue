@@ -926,6 +926,8 @@ export interface BaseCompletionOptions {
   prediction?: Prediction;
   tools?: Tool[];
   toolChoice?: ToolChoice;
+  reasoning?: boolean;
+  reasoningBudgetTokens?: number;
 }
 
 export interface ModelCapability {
