@@ -1148,6 +1148,7 @@ export interface ExperimentalConfig {
    */
   useChromiumForDocsCrawling?: boolean;
   modelContextProtocolServers?: MCPOptions[];
+  systemMessageComposition?: "legacy" | "append" | "prepend" | "placeholders";
 }
 
 export interface AnalyticsConfig {

@@ -3,7 +3,7 @@ import {
   IdeSettings,
   ILLM,
   LLMOptions,
-  ModelDescription,
+  ModelDescription
 } from "../..";
 import { renderTemplatedString } from "../../promptFiles/v1/renderTemplatedString";
 import { BaseLLM } from "../index";
