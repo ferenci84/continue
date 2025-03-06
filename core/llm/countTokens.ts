@@ -391,8 +391,6 @@ function compileChatMessages(
 
   msgsCopy = addSpaceToAnyEmptyMessages(msgsCopy);
 
-  const replaceSystemMessage = llmOptions?.replaceSystemMessage ?? false;
-
   if (prompt) {
     const promptMsg: ChatMessage = {
       role: "user",
@@ -411,15 +409,11 @@ function compileChatMessages(
       content = renderChatMessage(msgs?.[0]);
     }
     if (systemMessage && systemMessage.trim() !== "") {
-      if (replaceSystemMessage) {
-        content = systemMessage;
-      } else {
-        const shouldAddNewLines = content !== "";
-        if (shouldAddNewLines) {
-          content += "\n\n";
-        }
-        content += systemMessage;
+      const shouldAddNewLines = content !== "";
+      if (shouldAddNewLines) {
+        content += "\n\n";
       }
+      content += systemMessage;
     }
     const systemChatMsg: ChatMessage = {
       role: "system",

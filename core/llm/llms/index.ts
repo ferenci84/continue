@@ -145,7 +145,6 @@ export async function llmFromDescription(
         256
     },
     systemMessage,
-    replaceSystemMessage: desc.replaceSystemMessage ?? false,
     writeLog,
     uniqueId,
   };

@@ -30,7 +30,6 @@ Each model has specific configuration options tailored to its provider and funct
 - `promptTemplates`: A mapping of prompt template names (e.g., `edit`) to template strings. [Customization Guide](https://docs.continue.dev/model-setup/configuration#customizing-the-edit-prompt).
 - `completionOptions`: Model-specific completion options, same format as top-level [`completionOptions`](#completionoptions), which they override.
 - `systemMessage`: A system message that will precede responses from the LLM. (Note: this property has higher precendence than the root `systemMessage` property)
-- `replaceSystemMessage`: If `true`, replaces the system message with the one specified in the model config's `systemMessage` property or with the root `systemMessage` property. If `false`, appends the `systemMessage` to the default system message, if any exists for the model. (default: `false`)
 - `requestOptions`: Model-specific HTTP request options, same format as top-level [`requestOptions`](#requestoptions), which they override.
 - `apiType`: Specifies the type of API (`openai` or `azure`).
 - `apiVersion`: Azure API version (e.g., `2023-07-01-preview`).
@@ -373,6 +372,7 @@ Several experimental config parameters are available, as described below:
   - `optimize`: Prompt for optimizing code.
 - `modelContextProtocolServers`: See [Model Context Protocol](/customize/context-providers#model-context-protocol)
 - `systemMessageComposition`: Controls how the default system instructions and user-provided system message are combined:
+
   - `legacy` or `append` (default): Default instructions are placed first, followed by user system message.
   - `prepend`: User system message is placed first, followed by default instructions.
   - `placeholders`: User system message can include special placeholders to control where default instructions appear:
