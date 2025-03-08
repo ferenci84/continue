@@ -20,7 +20,7 @@ interface ToolUseState {
   input: string;
 }
 
-class AnthropicLLM extends BaseLLM {
+export class AnthropicLLM extends BaseLLM {
   static providerName = "anthropic";
   static defaultOptions: Partial<LLMOptions> = {
     region: "us-east-1",

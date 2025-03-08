@@ -14,6 +14,7 @@ import {
 import { renderChatMessage } from "../../util/messageContent.js";
 import { BaseLLM } from "../index.js";
 import { PROVIDER_TOOL_SUPPORT } from "../toolSupport.js";
+import { AnthropicLLM } from "./Anthropic.js";
 
 interface ModelConfig {
   formatPayload: (text: string) => any;
@@ -41,6 +42,9 @@ class Bedrock extends BaseLLM {
   private _currentToolResponse: Partial<ToolUseState> | null = null;
 
   public requestOptions: { region?: string; credentials?: any; headers?: Record<string, string> };
+  private _isClaudeModel: boolean = false;
+  private _anthropic: AnthropicLLM | null = null;
+
 
   constructor(options: LLMOptions) {
     super(options);
@@ -56,6 +60,19 @@ class Bedrock extends BaseLLM {
       region: options.region,
       headers: {},
     };
+
+    this._isClaudeModel = this.model?.includes("anthropic.claude") || false;
+
+    /*if (this._isClaudeModel) {
+      console.log("Initializing AnthropicClient for Claude model in Bedrock");
+      this._anthropic = new AnthropicLLM({
+        ...options,
+        // Ensure any Claude-specific options are passed through
+      }, "bedrock");
+      this._streamChat = this._anthropic._streamChat.bind(this._anthropic);
+      this._streamComplete = this._anthropic._streamComplete.bind(this._anthropic);
+    }*/
+
   }
 
   protected async *_streamComplete(
