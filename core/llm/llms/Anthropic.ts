@@ -91,6 +91,10 @@ class AnthropicLLM extends BaseLLM {
         description: tool.function.description,
         input_schema: tool.function.parameters,
       })),
+      thinking: options.reasoning ? {
+        type: "enabled",
+        budget_tokens: options.reasoningBudgetTokens,
+      } : undefined,
       tool_choice: options.toolChoice
         ? {
           type: "tool",
