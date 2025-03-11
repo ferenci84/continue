@@ -1,7 +1,9 @@
 import {
   BedrockRuntimeClient,
+  ContentBlock,
   ConverseStreamCommand,
-  InvokeModelCommand
+  InvokeModelCommand,
+  Message
 } from "@aws-sdk/client-bedrock-runtime";
 import { fromIni } from "@aws-sdk/credential-providers";
 
@@ -113,6 +115,7 @@ class Bedrock extends BaseLLM {
     try {
       response = await client.send(command, { abortSignal: signal });
     } catch (error: unknown) {
+      console.error(error);
       const message = error instanceof Error ? error.message : "Unknown error";
       throw new Error(`Failed to communicate with Bedrock API: ${message}`);
     }
@@ -124,9 +127,9 @@ class Bedrock extends BaseLLM {
     try {
       for await (const chunk of response.stream) {
 
-        console.log(chunk);
-
         if (chunk.contentBlockDelta?.delta) {
+
+          const delta: any = chunk.contentBlockDelta.delta
 
           // Handle text content
           if (chunk.contentBlockDelta.delta.text) {
@@ -137,6 +140,18 @@ class Bedrock extends BaseLLM {
           // Handle text content
           if ((chunk.contentBlockDelta.delta as any).reasoningContent?.text) {
             yield { role: "thinking", content: (chunk.contentBlockDelta.delta as any).reasoningContent.text };
+            continue;
+          }
+
+          // Handle signature for thinking
+          if (delta.reasoningContent?.signature) {
+            yield { role: "thinking", content: "", signature: delta.reasoningContent.signature };
+            continue;
+          }
+
+          // Handle redacted thinking
+          if (delta.redactedReasoning?.data) {
+            yield { role: "thinking", content: "", redactedThinking: delta.redactedReasoning.data };
             continue;
           }
 
@@ -151,6 +166,12 @@ class Bedrock extends BaseLLM {
         }
 
         if (chunk.contentBlockStart?.start) {
+          const start: any = chunk.contentBlockStart.start
+          if (start.redactedReasoning) {
+            yield { role: "thinking", content: "", redactedThinking: start.redactedReasoning.data };
+            continue;
+          }
+
           const toolUse = chunk.contentBlockStart.start.toolUse;
           if (toolUse?.toolUseId && toolUse?.name) {
             this._currentToolResponse = {
@@ -208,22 +229,20 @@ class Bedrock extends BaseLLM {
     const convertedMessages = this._convertMessages(messages);
 
     const supportsTools = PROVIDER_TOOL_SUPPORT.bedrock?.(options.model || "") ?? false;
-    const tools = (supportsTools && options.tools?.map(tool => ({
-      toolSpec: {
-        name: tool.function.name,
-        description: tool.function.description,
-        inputSchema: {
-          json: tool.function.parameters
-        }
-      }
-    }))) || null
-
     return {
       modelId: options.model,
       messages: convertedMessages,
       system: this.systemMessage ? [{ text: this.systemMessage }] : undefined,
-      toolConfig: tools && tools.length ? {
-        tools
+      toolConfig: supportsTools && options.tools ? {
+        tools: options.tools.map(tool => ({
+          toolSpec: {
+            name: tool.function.name,
+            description: tool.function.description,
+            inputSchema: {
+              json: tool.function.parameters
+            }
+          }
+        }))
       } : undefined,
       inferenceConfig: {
         maxTokens: options.maxTokens,
@@ -250,10 +269,10 @@ class Bedrock extends BaseLLM {
     };
   }
 
-  private _convertMessage(message: ChatMessage): any {
+  private _convertMessage(message: ChatMessage): Message | null {
     // Handle system messages explicitly
     if (message.role === "system") {
-      return;
+      return null;
     }
 
     // Tool response handling
@@ -287,6 +306,34 @@ class Bedrock extends BaseLLM {
           }
         }))
       };
+    }
+
+    if (message.role === "thinking") {
+      if (message.redactedThinking) {
+        const content: ContentBlock.ReasoningContentMember = {
+          reasoningContent: {
+            redactedContent: new Uint8Array(Buffer.from(message.redactedThinking))
+          }
+        };
+        return {
+          role: "assistant",
+          content: [content]
+        };
+      } else {
+        const content: ContentBlock.ReasoningContentMember = {
+          reasoningContent: {
+            reasoningText: {
+              text: (message.content as string) || "",
+              signature: message.signature
+            }
+
+          }
+        };
+        return {
+          role: "assistant",
+          content: [content]
+        };
+      }
     }
 
     // Standard text message
@@ -324,12 +371,14 @@ class Bedrock extends BaseLLM {
           }
           return null;
         }).filter(Boolean)
-      };
+      } as Message;
     }
+    return null;
   }
 
   private _convertMessages(messages: ChatMessage[]): any[] {
-    return messages
+
+    const converted = messages
       .map((message) => {
         try {
           return this._convertMessage(message);
@@ -339,6 +388,8 @@ class Bedrock extends BaseLLM {
         }
       })
       .filter(Boolean);
+    return converted;
+
   }
 
   private async _getCredentials() {

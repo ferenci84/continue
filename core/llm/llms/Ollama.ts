@@ -1,7 +1,14 @@
 import { JSONSchema7, JSONSchema7Object } from "json-schema";
 
-import { ChatMessage, ChatMessageRole, CompletionOptions, LLMOptions } from "../../index.js";
+import {
+  ChatMessage,
+  ChatMessageRole,
+  CompletionOptions,
+  LLMOptions,
+  ModelInstaller,
+} from "../../index.js";
 import { renderChatMessage } from "../../util/messageContent.js";
+import { getRemoteModelInfo } from "../../util/ollamaHelper.js";
 import { BaseLLM } from "../index.js";
 import { streamResponse } from "../stream.js";
 
@@ -123,7 +130,7 @@ interface OllamaTool {
   };
 }
 
-class Ollama extends BaseLLM {
+class Ollama extends BaseLLM implements ModelInstaller {
   static providerName = "ollama";
   static defaultOptions: Partial<LLMOptions> = {
     apiBase: "http://localhost:11434/",
@@ -559,7 +566,7 @@ class Ollama extends BaseLLM {
         model: this.model,
         input: chunks,
       }),
-      headers: headers
+      headers: headers,
     });
 
     if (!resp.ok) {
@@ -573,6 +580,45 @@ class Ollama extends BaseLLM {
       throw new Error("Ollama generated empty embedding");
     }
     return embedding;
+  }
+
+  public async installModel(
+    modelName: string,
+    signal: AbortSignal,
+    progressReporter?: (task: string, increment: number, total: number) => void,
+  ): Promise<any> {
+    const modelInfo = await getRemoteModelInfo(modelName, signal);
+    if (!modelInfo) {
+      throw new Error(`'${modelName}' not found in the Ollama registry!`);
+    }
+    const response = await fetch(this.getEndpoint("api/pull"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({ name: modelName }),
+      signal,
+    });
+
+    const reader = response.body?.getReader();
+    //TODO: generate proper progress based on modelInfo size
+    while (true) {
+      const { done, value } = (await reader?.read()) || {
+        done: true,
+        value: undefined,
+      };
+      if (done) {
+        break;
+      }
+
+      const chunk = new TextDecoder().decode(value);
+      const lines = chunk.split("\n").filter(Boolean);
+      for (const line of lines) {
+        const data = JSON.parse(line);
+        progressReporter?.(data.status, data.completed, data.total);
+      }
+    }
   }
 }
 
