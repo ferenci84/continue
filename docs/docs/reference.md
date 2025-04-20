@@ -174,7 +174,6 @@ The `models` section defines the language models used in your configuration. Mod
   - `maxChunkSize`: Maximum tokens per document chunk. Minimum is 128 tokens.
   - `maxBatchSize`: Maximum number of chunks per request. Minimum is 1 chunk.
 - `defaultCompletionOptions`: Default completion options for model settings.
-
   - `contextLength`: Maximum context length of the model, typically in tokens.
   - `maxTokens`: Maximum number of tokens to generate in a completion.
   - `temperature`: Controls the randomness of the completion. Values range from `0.0` (deterministic) to `1.0` (random).
@@ -184,7 +183,6 @@ The `models` section defines the language models used in your configuration. Mod
   - `n`: Number of completions to generate.
   - `reasoning`: Boolean to enable thinking/reasoning for Anthropic Claude 3.7+ models.
   - `reasoningBudgetTokens`: Budget tokens for thinking/reasoning in Anthropic Claude 3.7+ models.
-
 - `requestOptions`: HTTP request options specific to the model.
   - `timeout`: Timeout for each request to the language model.
   - `verifySsl`: Whether to verify SSL certificates for requests.
