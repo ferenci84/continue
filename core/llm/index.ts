@@ -204,11 +204,11 @@ export abstract class BaseLLM implements ILLM {
         options.completionOptions?.maxTokens ??
         (llmInfo?.maxCompletionTokens
           ? Math.min(
-              llmInfo.maxCompletionTokens,
-              // Even if the model has a large maxTokens, we don't want to use that every time,
-              // because it takes away from the context length
-              this.contextLength / 4,
-            )
+            llmInfo.maxCompletionTokens,
+            // Even if the model has a large maxTokens, we don't want to use that every time,
+            // because it takes away from the context length
+            this.contextLength / 4,
+          )
           : DEFAULT_MAX_TOKENS),
     };
     this.requestOptions = options.requestOptions;
@@ -897,6 +897,7 @@ export abstract class BaseLLM implements ILLM {
 
     let thinking = "";
     let completion = "";
+    let citations: null | string[] = null
 
     try {
       if (this.templateMessages) {
@@ -945,6 +946,9 @@ export abstract class BaseLLM implements ILLM {
                 });
                 yield result;
               }
+              if (!citations && (chunk as any).citations && Array.isArray((chunk as any).citations)) {
+                citations = (chunk as any).citations;
+              }
             }
           }
         } else {
@@ -967,6 +971,14 @@ export abstract class BaseLLM implements ILLM {
           }
         }
       }
+
+      if (citations) {
+        interaction?.logItem({
+          kind: "message",
+          message: { "role": "assistant", content: (`\n\nCitations:\n${citations.map((c, i) => `${i + 1}: ${c}`).join("\n")}\n\n`) },
+        });
+      }
+
       status = this._logEnd(
         completionOptions.model,
         prompt,
