@@ -166,6 +166,8 @@ export abstract class BaseLLM implements ILLM {
   maxEmbeddingChunkSize: number;
   maxEmbeddingBatchSize: number;
 
+  forceStreamChat = false;
+
   private _llmOptions: LLMOptions;
 
   protected openaiAdapter?: BaseLlmApi;
@@ -900,7 +902,7 @@ export abstract class BaseLLM implements ILLM {
     let citations: null | string[] = null
 
     try {
-      if (this.templateMessages) {
+      if (this.templateMessages && !this.forceStreamChat) {
         for await (const chunk of this._streamComplete(
           prompt,
           signal,
