@@ -1,72 +1,79 @@
 import { createAsyncThunk, unwrapResult } from "@reduxjs/toolkit";
-import { ChatMessage, ContextItem } from "core";
-import { constructMessages } from "core/llm/constructMessages";
+import { ChatMessage } from "core";
 import { renderContextItems } from "core/util/messageContent";
-import { selectDefaultModel } from "../slices/configSlice";
 import {
-  addContextItemsAtIndex,
-  setActive,
+  ChatHistoryItemWithMessageId,
+  resetNextCodeBlockToApplyIndex,
   streamUpdate,
 } from "../slices/sessionSlice";
 import { ThunkApiType } from "../store";
-import { resetStateForNewMessage } from "./resetStateForNewMessage";
+import { findToolCallById } from "../util";
 import { streamNormalInput } from "./streamNormalInput";
 import { streamThunkWrapper } from "./streamThunkWrapper";
 
+/**
+ * Determines if we should continue streaming based on tool call completion status.
+ */
+function areAllToolsDoneStreaming(
+  assistantMessage: ChatHistoryItemWithMessageId | undefined,
+): boolean {
+  // This might occur because of race conditions, if so, the tools are completed
+  if (!assistantMessage?.toolCallStates) {
+    return true;
+  }
+
+  // Only continue if all tool calls are complete
+  const completedToolCalls = assistantMessage.toolCallStates.filter(
+    (tc) => tc.status === "done",
+  );
+
+  return completedToolCalls.length === assistantMessage.toolCallStates.length;
+}
+
 export const streamResponseAfterToolCall = createAsyncThunk<
   void,
-  {
-    toolCallId: string;
-    toolOutput: ContextItem[];
-  },
+  { toolCallId: string },
   ThunkApiType
 >(
   "chat/streamAfterToolCall",
-  async ({ toolCallId, toolOutput }, { dispatch, getState }) => {
+  async ({ toolCallId }, { dispatch, getState }) => {
     await dispatch(
       streamThunkWrapper(async () => {
         const state = getState();
-        const useTools = state.ui.useTools;
-        const initialHistory = state.session.history;
-        const defaultModel = selectDefaultModel(state);
 
-        if (!defaultModel) {
-          throw new Error("No model selected");
+        const toolCallState = findToolCallById(
+          state.session.history,
+          toolCallId,
+        );
+
+        if (!toolCallState) {
+          return; // in cases where edit tool is cancelled mid apply, this will be triggered
         }
 
-        resetStateForNewMessage();
+        const toolOutput = toolCallState.output ?? [];
 
+        dispatch(resetNextCodeBlockToApplyIndex());
         await new Promise((resolve) => setTimeout(resolve, 0));
 
+        // Create and dispatch the tool message
         const newMessage: ChatMessage = {
           role: "tool",
           content: renderContextItems(toolOutput),
           toolCallId,
         };
         dispatch(streamUpdate([newMessage]));
-        dispatch(
-          addContextItemsAtIndex({
-            index: initialHistory.length,
-            contextItems: toolOutput.map((contextItem) => ({
-              ...contextItem,
-              id: {
-                providerTitle: "toolCall",
-                itemId: toolCallId,
-              },
-            })),
-          }),
+
+        // Check if we should continue streaming based on tool call completion
+        const history = getState().session.history;
+        const assistantMessage = history.find(
+          (item) =>
+            item.message.role === "assistant" &&
+            item.toolCallStates?.some((tc) => tc.toolCallId === toolCallId),
         );
 
-        dispatch(setActive());
-
-        const updatedHistory = getState().session.history;
-        const messages = constructMessages(
-          [...updatedHistory],
-          defaultModel,
-          useTools,
-        );
-        const output = await dispatch(streamNormalInput(messages));
-        unwrapResult(output);
+        if (areAllToolsDoneStreaming(assistantMessage)) {
+          unwrapResult(await dispatch(streamNormalInput({})));
+        }
       }),
     );
   },

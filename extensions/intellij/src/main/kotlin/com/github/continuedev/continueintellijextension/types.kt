@@ -1,11 +1,7 @@
 package com.github.continuedev.continueintellijextension
 
+import com.github.continuedev.continueintellijextension.editor.RangeInFileWithContents
 import com.google.gson.JsonElement
-
-enum class IdeType(val value: String) {
-    JETBRAINS("jetbrains"),
-    VSCODE("vscode"),
-}
 
 enum class ToastType(val value: String) {
     INFO("info"),
@@ -30,11 +26,12 @@ data class Position(val line: Int, val character: Int)
 data class Range(val start: Position, val end: Position)
 
 data class IdeInfo(
-    val ideType: IdeType,
+    val ideType: String,
     val name: String,
     val version: String,
     val remoteName: String,
-    val extensionVersion: String
+    val extensionVersion: String,
+    val isPrerelease: Boolean
 )
 
 data class Problem(
@@ -67,6 +64,68 @@ data class RangeInFileWithContents(
     val contents: String
 )
 
+/**
+ * Signature help represents the signature of something
+ * callable. There can be multiple signatures but only one
+ * active and only one active parameter.
+ */
+data class SignatureHelp(
+    /**
+     * One or more signatures.
+     */
+    val signatures: List<SignatureInformation>,
+
+    /**
+     * The active signature.
+     */
+    val activeSignature: Int,
+
+    /**
+     * The active parameter of the active signature.
+     */
+    val activeParameter: Int
+)
+
+/**
+ * Represents the signature of something callable. A signature
+ * can have a label, like a function-name, a doc-comment, and
+ * a set of parameters.
+ */
+data class SignatureInformation(
+    /**
+     * The label of this signature. Will be shown in
+     * the UI.
+     */
+    val label: String,
+
+    /**
+     * The parameters of this signature.
+     */
+    val parameters: List<ParameterInformation>,
+
+    /**
+     * The index of the active parameter.
+     *
+     * If provided, this is used in place of [SignatureHelp.activeParameter].
+     */
+    val activeParameter: Int? = null
+)
+
+/**
+ * Represents a parameter of a callable-signature. A parameter can
+ * have a label and a doc-comment.
+ */
+data class ParameterInformation(
+    /**
+     * The label of this signature.
+     *
+     * Either a string or inclusive start and exclusive end offsets within its containing
+     * [SignatureInformation.label] signature label. *Note*: A label of type string must be
+     * a substring of its containing signature information's [SignatureInformation.label] label.
+     */
+    val label: String // Note: Kotlin doesn't have union types, so this represents the string case
+)
+
 data class ControlPlaneSessionInfo(
     val accessToken: String,
     val account: Account
@@ -86,7 +145,6 @@ data class IdeSettings(
     val remoteConfigServerUrl: String?,
     val remoteConfigSyncPeriod: Int,
     val userToken: String,
-    val enableControlServerBeta: Boolean,
     val pauseCodebaseIndexOnStart: Boolean,
     val continueTestEnvironment: String
 )
@@ -95,6 +153,11 @@ data class ContinueRcJson(
     val mergeBehavior: ConfigMergeType
 )
 
+data class TerminalOptions(
+    val reuseTerminal: Boolean?,
+    val terminalName: String?,
+    val waitForCompletion: Boolean?
+)
 
 interface IDE {
     suspend fun getIdeInfo(): IdeInfo
@@ -106,6 +169,8 @@ interface IDE {
     suspend fun getClipboardContent(): Map<String, String>
 
     suspend fun isTelemetryEnabled(): Boolean
+
+    suspend fun isWorkspaceRemote(): Boolean
 
     suspend fun getUniqueId(): String
 
@@ -136,7 +201,7 @@ interface IDE {
 
     suspend fun openUrl(url: String)
 
-    suspend fun runCommand(command: String)
+    suspend fun runCommand(command: String, options: TerminalOptions?)
 
     suspend fun saveFile(filepath: String)
 
@@ -162,7 +227,9 @@ interface IDE {
 
     suspend fun getPinnedFiles(): List<String>
 
-    suspend fun getSearchResults(query: String): String
+    suspend fun getSearchResults(query: String, maxResults: Int?): String
+
+    suspend fun getFileResults(pattern: String, maxResults: Int?): List<String>
 
     // Note: This should be a `Pair<String, String>` but we use `List<Any>` because the keys of `Pair`
     // will serialize to `first and `second` rather than `0` and `1` like in JavaScript
@@ -190,18 +257,14 @@ interface IDE {
 
     suspend fun getFileStats(files: List<String>): Map<String, FileStats>
 
-    suspend fun getGitHubAuthToken(args: GetGhTokenArgs): String?
-
     // LSP
     suspend fun gotoDefinition(location: Location): List<RangeInFile>
+    suspend fun gotoTypeDefinition(location: Location): List<RangeInFile>
+    suspend fun getSignatureHelp(location: Location): SignatureHelp?
 
     // Callbacks
     fun onDidChangeActiveTextEditor(callback: (filepath: String) -> Unit)
 }
-
-data class GetGhTokenArgs(
-    val force: String?
-)
 
 data class Message(
     val messageType: String,
@@ -213,3 +276,51 @@ data class Message(
 data class AcceptRejectDiff(val accepted: Boolean, val stepIndex: Int)
 
 data class DeleteAtIndex(val index: Int)
+
+enum class ApplyStateStatus(val status: String) {
+    NOT_STARTED("not-started"),
+    STREAMING("streaming"),
+    DONE("done"),
+    CLOSED("closed");
+}
+
+data class ApplyState(
+    val streamId: String,
+    val status: String,
+    val numDiffs: Int? = null,
+    val filepath: String? = null,
+    val fileContent: String? = null,
+    val originalFileContent: String? = null,
+    val toolCallId: String? = null
+)
+
+data class HighlightedCodePayload(
+    val rangeInFileWithContents: com.github.continuedev.continueintellijextension.RangeInFileWithContents,
+    val prompt: String? = null,
+    val shouldRun: Boolean? = null
+)
+
+data class StreamDiffLinesPayload(
+    val prefix: String,
+    val highlighted: String,
+    val suffix: String,
+    val input: String,
+    val language: String?,
+    val modelTitle: String?,
+    val includeRulesInSystemMessage: Boolean,
+    val fileUri: String?
+)
+
+data class AcceptOrRejectDiffPayload(
+    val filepath: String? = null,
+    val streamId: String? = null
+)
+
+data class ShowFilePayload(
+    val filepath: String
+)
+
+sealed class FimResult {
+    data class FimEdit(val fimText: String) : FimResult()
+    object NotFimEdit : FimResult()
+}

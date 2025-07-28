@@ -1,5 +1,4 @@
 import { ConfigHandler } from "../config/ConfigHandler.js";
-import { TRIAL_FIM_MODEL } from "../config/onboarding.js";
 import { IDE, ILLM } from "../index.js";
 import OpenAI from "../llm/llms/OpenAI.js";
 import { DEFAULT_AUTOCOMPLETE_OPTS } from "../util/parameters.js";
@@ -11,7 +10,7 @@ import { BracketMatchingService } from "./filtering/BracketMatchingService.js";
 import { CompletionStreamer } from "./generation/CompletionStreamer.js";
 import { postprocessCompletion } from "./postprocessing/index.js";
 import { shouldPrefilter } from "./prefiltering/index.js";
-import { getAllSnippets } from "./snippets/index.js";
+import { getAllSnippetsWithoutRace } from "./snippets/index.js";
 import { renderPrompt } from "./templating/index.js";
 import { GetLspDefinitionsFunction } from "./types.js";
 import { AutocompleteDebouncer } from "./util/AutocompleteDebouncer.js";
@@ -75,11 +74,6 @@ export class CompletionProvider {
 
     if (llm instanceof OpenAI) {
       llm.useLegacyCompletionsEndpoint = true;
-    } else if (
-      llm.providerName === "free-trial" &&
-      llm.model !== TRIAL_FIM_MODEL
-    ) {
-      llm.model = TRIAL_FIM_MODEL;
     }
 
     return llm;
@@ -120,18 +114,26 @@ export class CompletionProvider {
     this.loggingService.markDisplayed(completionId, outcome);
   }
 
-  private async _getAutocompleteOptions() {
+  private async _getAutocompleteOptions(llm: ILLM) {
     const { config } = await this.configHandler.loadConfig();
     const options = {
       ...DEFAULT_AUTOCOMPLETE_OPTS,
       ...config?.tabAutocompleteOptions,
+      ...llm.autocompleteOptions,
     };
+
+    // Enable static contextualization if defined.
+    if (config?.experimental?.enableStaticContextualization) {
+      options.experimental_enableStaticContextualization = true;
+    }
+
     return options;
   }
 
   public async provideInlineCompletionItems(
     input: AutocompleteInput,
     token: AbortSignal | undefined,
+    force?: boolean,
   ): Promise<AutocompleteOutcome | undefined> {
     try {
       // Create abort signal if not given
@@ -142,16 +144,25 @@ export class CompletionProvider {
         token = controller.signal;
       }
       const startTime = Date.now();
-      const options = await this._getAutocompleteOptions();
-
-      // Debounce
-      if (await this.debouncer.delayAndShouldDebounce(options.debounceDelay)) {
-        return undefined;
-      }
 
       const llm = await this._prepareLlm();
       if (!llm) {
         return undefined;
+      }
+
+      const options = await this._getAutocompleteOptions(llm);
+
+      // Debounce
+      if (!force) {
+        if (
+          await this.debouncer.delayAndShouldDebounce(options.debounceDelay)
+        ) {
+          return undefined;
+        }
+      }
+
+      if (llm.promptTemplates?.autocomplete) {
+        options.template = llm.promptTemplates.autocomplete as string;
       }
 
       const helper = await HelperVars.create(
@@ -166,7 +177,7 @@ export class CompletionProvider {
       }
 
       const [snippetPayload, workspaceDirs] = await Promise.all([
-        getAllSnippets({
+        getAllSnippetsWithoutRace({
           helper,
           ide: this.ide,
           getDefinitionsFromLsp: this.getDefinitionsFromLsp,
@@ -248,7 +259,7 @@ export class CompletionProvider {
         prefix,
         suffix,
         prompt,
-        modelProvider: llm.providerName,
+        modelProvider: llm.underlyingProviderName,
         modelName: llm.model,
         completionOptions,
         cacheHit,
@@ -257,15 +268,21 @@ export class CompletionProvider {
         completionId: helper.input.completionId,
         gitRepo: await this.ide.getRepoName(helper.filepath),
         uniqueId: await this.ide.getUniqueId(),
-        timestamp: Date.now(),
+        timestamp: new Date().toISOString(),
         ...helper.options,
       };
+
+      if (options.experimental_enableStaticContextualization) {
+        outcome.enabledStaticContextualization = true;
+      }
 
       //////////
 
       // Save to cache
       if (!outcome.cacheHit && helper.options.useCache) {
-        (await this.autocompleteCache).put(outcome.prefix, outcome.completion);
+        (await this.autocompleteCache)
+          .put(outcome.prefix, outcome.completion)
+          .catch((e) => console.warn(`Failed to save to cache: ${e.message}`));
       }
 
       // When using the JetBrains extension, Mark as displayed

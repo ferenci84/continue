@@ -6,10 +6,11 @@ import {
   ContextSubmenuItem,
   LoadSubmenuItemsArgs,
 } from "../../";
-import { MCPManagerSingleton } from "../mcp";
+import { MCPManagerSingleton } from "../mcp/MCPManagerSingleton";
 
 interface MCPContextProviderOptions {
   mcpId: string;
+  serverName: string;
   submenuItems: ContextSubmenuItem[];
 }
 
@@ -19,7 +20,19 @@ class MCPContextProvider extends BaseContextProvider {
     displayTitle: "MCP",
     description: "Model Context Protocol",
     type: "submenu",
+    renderInlineAs: "",
   };
+  override get description(): ContextProviderDescription {
+    return {
+      title: `${MCPContextProvider.description.title}-${this.options["mcpId"]}`,
+      displayTitle: this.options["serverName"]
+        ? `${this.options["serverName"]} resources`
+        : "MCP",
+      renderInlineAs: "",
+      description: "Model Context Protocol",
+      type: "submenu",
+    };
+  }
 
   static encodeMCPResourceId(mcpId: string, uri: string): string {
     return JSON.stringify({ mcpId, uri });
@@ -36,6 +49,20 @@ class MCPContextProvider extends BaseContextProvider {
     super(options);
   }
 
+  /**
+   * Continue experimentally supports resource templates (https://modelcontextprotocol.io/docs/concepts/resources#resource-templates)
+   * by allowing specifically just the "query" variable in the template, which we will update with the full input of the user in the input box
+   */
+  private insertInputToUriTemplate(uri: string, query: string): string {
+    const TEMPLATE_VAR = "query";
+    if (uri.includes(`{${TEMPLATE_VAR}}`)) {
+      // Sending an empty string will result in an error, so we instead send "null"
+      const queryOrNull = query.trim() === "" ? "null" : query;
+      return uri.replace(`{${TEMPLATE_VAR}}`, encodeURIComponent(queryOrNull));
+    }
+    return uri;
+  }
+
   async getContextItems(
     query: string,
     extras: ContextProviderExtras,
@@ -47,7 +74,9 @@ class MCPContextProvider extends BaseContextProvider {
       throw new Error(`No MCP connection found for ${mcpId}`);
     }
 
-    const { contents } = await connection.client.readResource({ uri });
+    const { contents } = await connection.client.readResource({
+      uri: this.insertInputToUriTemplate(uri, extras.fullInput),
+    });
 
     return await Promise.all(
       contents.map(async (resource) => {

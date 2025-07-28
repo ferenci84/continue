@@ -2,7 +2,7 @@
   "name": "continue",
   "icon": "media/icon.png",
   "author": "Continue Dev, Inc",
-  "version": "1.1.3",
+  "version": "1.1.69",
   "repository": {
     "type": "git",
     "url": "https://github.com/continuedev/continue"
@@ -18,13 +18,13 @@
   "homepage": "https://continue.dev",
   "qna": "https://github.com/continuedev/continue/issues/new/choose",
   "license": "Apache-2.0",
-  "displayName": "Continue - Codestral, Claude, and more",
+  "displayName": "Continue - open-source AI code assistant",
   "pricing": "Free",
   "description": "The leading open-source AI code assistant",
   "publisher": "Continue",
   "engines": {
     "vscode": "^1.70.0",
-    "node": ">=20.11.0"
+    "node": ">=20.19.0"
   },
   "engine-strict": true,
   "galleryBanner": {
@@ -41,17 +41,17 @@
   ],
   "keywords": [
     "chatgpt",
+    "cline",
+    "roo",
     "github",
     "copilot",
     "claude",
-    "sonnet",
     "mistral",
     "codestral",
-    "codegpt",
-    "ai",
-    "llama"
+    "ai"
   ],
   "activationEvents": [
+    "onUri",
     "onStartupFinished",
     "onView:continueGUIView"
   ],
@@ -91,11 +91,6 @@
           "default": true,
           "markdownDescription": "Continue collects anonymous usage data, cleaned of PII, to help us improve the product for our users. Read more  at [continue.dev › Telemetry](https://docs.continue.dev/telemetry)."
         },
-        "continue.enableContinueForTeams": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "Enable Continue for teams beta features. To sign in, click the gear icon to go to the settings page, and click Sign In."
-        },
         "continue.showInlineTip": {
           "type": "boolean",
           "default": true,
@@ -109,7 +104,7 @@
         "continue.enableQuickActions": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Enable the experimental Quick Actions feature. Read our walkthrough to learn about configuration and how to share feedback: [continue.dev › Walkthrough: Quick Actions (experimental)](https://docs.continue.dev/features/quick-actions)"
+          "markdownDescription": "Enable the experimental Quick Actions feature. Read our walkthrough to learn about configuration and how to share feedback: [continue.dev › Walkthrough: Quick Actions (experimental)](https://docs.continue.dev/customize/deep-dives/vscode-actions#quick-actions)"
         },
         "continue.enableTabAutocomplete": {
           "type": "boolean",
@@ -125,6 +120,11 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Pause Continue's codebase index on start."
+        },
+        "continue.enableConsole": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Enable a console to log and explore model inputs and outputs. It can be found in the bottom panel."
         },
         "continue.remoteConfigServerUrl": {
           "type": "string",
@@ -178,7 +178,7 @@
       {
         "command": "continue.focusEdit",
         "category": "Continue",
-        "title": "Generate Code",
+        "title": "Edit Highlighted Code",
         "group": "Continue"
       },
       {
@@ -226,6 +226,11 @@
         "group": "Continue"
       },
       {
+        "command": "continue.forceAutocomplete",
+        "title": "Continue: Force Autocomplete",
+        "category": "Continue"
+      },
+      {
         "command": "continue.selectFilesAsContext",
         "category": "Continue",
         "title": "Select Files as Context",
@@ -252,16 +257,16 @@
         "group": "Continue"
       },
       {
-        "command": "continue.navigateTo",
+        "command": "continue.clearConsole",
         "category": "Continue",
-        "title": "Navigate to a path",
+        "title": "Clear Console",
+        "icon": "$(clear-all)",
         "group": "Continue"
       },
       {
-        "command": "continue.openMorePage",
+        "command": "continue.navigateTo",
         "category": "Continue",
-        "title": "More",
-        "icon": "$(ellipsis)",
+        "title": "Navigate to a path",
         "group": "Continue"
       },
       {
@@ -319,9 +324,36 @@
         "group": "Continue"
       },
       {
-        "command": "continue.focusContinueSessionId",
+        "command": "continue.focusContinueInput",
         "category": "Continue",
         "title": "Focus Continue Chat",
+        "group": "Continue"
+      },
+      {
+        "command": "continue.enterEnterpriseLicenseKey",
+        "category": "Continue",
+        "title": "Enter Enterprise License Key",
+        "group": "Continue"
+      },
+      {
+        "command": "continue.nextEditWindow.hideNextEditSuggestion",
+        "category": "Continue",
+        "title": "Hide Next Edit Suggestion"
+      },
+      {
+        "command": "continue.nextEditWindow.acceptNextEditSuggestion",
+        "category": "Continue",
+        "title": "Accept Next Edit Suggestion"
+      },
+      {
+        "command": "continue.forceNextEdit",
+        "category": "Continue",
+        "title": "Continue: Force Next Edit"
+      },
+      {
+        "command": "continue.generateRule",
+        "category": "Continue",
+        "title": "Generate Rule",
         "group": "Continue"
       }
     ],
@@ -383,11 +415,6 @@
         "key": "ctrl+i"
       },
       {
-        "command": "continue.focusEditWithoutClear",
-        "mac": "cmd+shift+i",
-        "key": "ctrl+shift+i"
-      },
-      {
         "command": "continue.exitEditMode",
         "mac": "escape",
         "key": "escape",
@@ -411,9 +438,25 @@
         "when": "!terminalFocus"
       },
       {
+        "command": "continue.forceAutocomplete",
+        "key": "ctrl+alt+space",
+        "mac": "cmd+alt+space",
+        "when": "editorTextFocus && !editorHasSelection && !editorReadOnly && !inSnippetMode"
+      },
+      {
         "command": "continue.applyCodeFromChat",
         "mac": "alt+a",
         "key": "alt+a"
+      },
+      {
+        "command": "continue.nextEditWindow.hideNextEditSuggestion",
+        "key": "escape",
+        "when": "editorTextFocus && nextEditWindowActive"
+      },
+      {
+        "command": "continue.nextEditWindow.acceptNextEditSuggestion",
+        "key": "tab",
+        "when": "editorTextFocus && nextEditWindowActive"
       }
     ],
     "submenus": [
@@ -438,6 +481,12 @@
         },
         {
           "command": "continue.newSession"
+        },
+        {
+          "command": "continue.enterEnterpriseLicenseKey"
+        },
+        {
+          "command": "continue.generateRule"
         }
       ],
       "editor/context": [
@@ -458,6 +507,11 @@
           "command": "continue.focusContinueInputWithoutClear",
           "group": "Continue",
           "when": "editorHasSelection"
+        },
+        {
+          "command": "continue.focusEdit",
+          "group": "Continue",
+          "when": "editorHasSelection && !editorReadonly"
         },
         {
           "command": "continue.writeCommentsForCode",
@@ -513,9 +567,9 @@
           "when": "view == continue.continueGUIView"
         },
         {
-          "command": "continue.openMorePage",
-          "group": "navigation@6",
-          "when": "view == continue.continueGUIView"
+          "command": "continue.clearConsole",
+          "group": "navigation@1",
+          "when": "view == continue.continueConsoleView"
         }
       ],
       "editor/title": [
@@ -544,6 +598,13 @@
           "title": "Continue",
           "icon": "media/sidebar-icon.png"
         }
+      ],
+      "panel": [
+        {
+          "id": "continueConsole",
+          "title": "Continue Console",
+          "icon": "$(window)"
+        }
       ]
     },
     "views": {
@@ -555,6 +616,16 @@
           "icon": "media/sidebar-icon.png",
           "visibility": "visible"
         }
+      ],
+      "continueConsole": [
+        {
+          "type": "webview",
+          "id": "continue.continueConsoleView",
+          "name": "Continue Console",
+          "icon": "$(window)",
+          "visibility": "visible",
+          "when": "config.continue.enableConsole"
+        }
       ]
     },
     "jsonValidation": [
@@ -565,6 +636,10 @@
       {
         "fileMatch": ".continuerc.json",
         "url": "./continue_rc_schema.json"
+      },
+      {
+        "fileMatch": "**/config.yaml",
+        "url": "./config-yaml-schema.json"
       }
     ]
   },
@@ -581,9 +656,9 @@
     "rebuild": "electron-rebuild -v 19.1.8 node-pty",
     "lint": "eslint src --ext ts",
     "lint:fix": "eslint . --ext ts --fix",
-    "build-test": "npm run esbuild && node esbuild.test.mjs",
-    "test": "npm run build-test && node ./out/runTestOnVSCodeHost.js",
-    "quick-test": "npm run build-test && node ./out/runTestOnVSCodeHost.js",
+    "test": "vitest run",
+    "vitest": "vitest run",
+    "write-build-timestamp": "node scripts/write-build-timestamp.js",
     "prepackage": "node scripts/prepackage.js",
     "package": "node scripts/package.js",
     "package-all": "node scripts/package-all.js",
@@ -594,15 +669,18 @@
     "e2e:compile": "tsc -p ./tsconfig.e2e.json",
     "e2e:build": "npm --prefix ../../gui run build && npm run package",
     "e2e:create-storage": "mkdir -p ./e2e/storage",
-    "e2e:get-chromedriver": "extest get-chromedriver --storage ./e2e/storage",
-    "e2e:get-vscode": "CODE_VERSION=\"1.95.0\" extest get-vscode --storage ./e2e/storage",
+    "e2e:get-chromedriver": "extest get-chromedriver --storage ./e2e/storage --code_version 1.95.0",
+    "e2e:get-vscode": "extest get-vscode --storage ./e2e/storage --code_version 1.95.0",
     "e2e:sign-vscode": "codesign --entitlements entitlements.plist --deep --force -s - './e2e/storage/Visual Studio Code.app'",
     "e2e:copy-vsix": "chmod +x ./e2e/get-latest-vsix.sh && bash ./e2e/get-latest-vsix.sh",
     "e2e:install-vsix": "extest install-vsix -f ./e2e/vsix/continue.vsix --extensions_dir ./e2e/.test-extensions --storage ./e2e/storage",
     "e2e:install-extensions": "extest install-from-marketplace ms-vscode-remote.remote-ssh --extensions_dir ./e2e/.test-extensions --storage ./e2e/storage && extest install-from-marketplace ms-vscode-remote.remote-containers --extensions_dir ./e2e/.test-extensions --storage ./e2e/storage && extest install-from-marketplace ms-vscode-remote.remote-wsl --extensions_dir ./e2e/.test-extensions --storage ./e2e/storage",
     "e2e:test": "extest run-tests ${TEST_FILE:-'./e2e/_output/tests/*.test.js'} --code_settings settings.json --extensions_dir ./e2e/.test-extensions --storage ./e2e/storage",
-    "e2e:clean": "rm -rf ./e2e/_output",
+    "e2e:clean": "rm -rf ./e2e/_output ./e2e/storage",
     "e2e:all": "npm run e2e:build && npm run e2e:compile && npm run e2e:create-storage && npm run e2e:get-chromedriver && npm run e2e:get-vscode && npm run e2e:sign-vscode && npm run e2e:copy-vsix && npm run e2e:install-vsix && npm run e2e:install-extensions && CONTINUE_GLOBAL_DIR=e2e/test-continue npm run e2e:test && npm run e2e:clean",
+    "e2e:all-non-mac": "npm run e2e:build && npm run e2e:compile && npm run e2e:create-storage && npm run e2e:get-chromedriver && npm run e2e:get-vscode && npm run e2e:copy-vsix && npm run e2e:install-vsix && npm run e2e:install-extensions && CONTINUE_GLOBAL_DIR=e2e/test-continue npm run e2e:test && npm run e2e:clean",
+    "e2e:recompile-extension": "npm run package && npm run e2e:compile && npm run e2e:copy-vsix && npm run e2e:install-vsix && npm run e2e:install-extensions && CONTINUE_GLOBAL_DIR=e2e/test-continue npm run e2e:test && npm run e2e:clean",
+    "e2e:rebuild-gui": "rm -rf gui && cp -r ../../gui/dist gui && npm run package && npm run e2e:copy-vsix && npm run e2e:install-vsix && npm run e2e:install-extensions && CONTINUE_GLOBAL_DIR=e2e/test-continue npm run e2e:test && npm run e2e:clean",
     "e2e:quick": "npm run e2e:compile && CONTINUE_GLOBAL_DIR=e2e/test-continue npm run e2e:test && npm run e2e:clean",
     "e2e:ci:download": "npm run e2e:create-storage && npm run e2e:get-chromedriver && npm run e2e:get-vscode",
     "e2e:ci:run": "npm run e2e:compile && npm run e2e:copy-vsix && npm run e2e:install-vsix && npm run e2e:install-extensions && CONTINUE_GLOBAL_DIR=e2e/test-continue npm run e2e:test",
@@ -610,17 +688,18 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.6.4",
-    "@nestjs/common": "^8.4.7",
-    "@openapitools/openapi-generator-cli": "^2.5.2",
+    "@nestjs/common": "^11.0.16",
+    "@openapitools/openapi-generator-cli": "^2.20.0",
     "@types/chai": "^5.0.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/follow-redirects": "^1.14.4",
-    "@types/glob": "^8.0.0",
-    "@types/mocha": "^10.0.6",
+    "@types/mocha": "^10.0.10",
     "@types/node": "16.x",
+    "@types/node-fetch": "^2.6.12",
     "@types/react-dom": "^18.2.4",
     "@types/request": "^2.48.8",
+    "@types/uuid": "^10.0.0",
     "@types/vscode": "1.70",
     "@types/ws": "^8.5.4",
     "@typescript-eslint/eslint-plugin": "^5.45.0",
@@ -630,24 +709,19 @@
     "esbuild": "0.17.19",
     "esbuild-visualizer": "^0.6.0",
     "eslint": "^8.28.0",
-    "glob": "^8.0.3",
     "json-schema-to-typescript": "^12.0.0",
-    "mocha": "^10.4.0",
     "ovsx": "^0.8.3",
     "rimraf": "^5.0.5",
-    "typescript": "^5.3.3",
-    "vite": "^4.3.9",
-    "vsce": "^2.15.0",
-    "vscode-extension-tester": "^8.10.0"
+    "typescript": "^5.6.3",
+    "vite": "^4.5.14",
+    "vscode-extension-tester": "^8.14.1"
   },
   "dependencies": {
-    "@continuedev/fetch": "^1.0.3",
+    "@continuedev/config-types": "^1.0.14",
+    "@continuedev/fetch": "^1.0.10",
     "@electron/rebuild": "^3.2.10",
     "@reduxjs/toolkit": "^1.9.3",
-    "@types/node-fetch": "^2.6.11",
-    "@types/uuid": "^9.0.8",
     "@vscode/ripgrep": "^1.15.9",
-    "@vscode/test-electron": "^2.3.9",
     "axios": "^1.2.5",
     "core": "file:../../core",
     "cors": "^2.8.5",
@@ -663,12 +737,13 @@
     "highlightable": "^1.3.0-beta.0",
     "http-proxy": "^1.18.1",
     "http-proxy-agent": "^7.0.0",
-    "http-proxy-middleware": "^2.0.6",
+    "http-proxy-middleware": "^2.0.9",
     "https-proxy-agent": "^7.0.2",
     "ignore": "^5.3.0",
     "jsdom": "^24.0.0",
     "lru-cache": "^11.0.2",
     "minisearch": "^7.0.0",
+    "mocha": "^11.7.1",
     "monaco-editor": "^0.45.0",
     "monaco-vscode-textmate-theme-converter": "^0.1.7",
     "ncp": "^2.0.0",
@@ -684,12 +759,18 @@
     "svg-builder": "^2.0.0",
     "systeminformation": "^5.23.7",
     "tailwindcss": "^3.3.2",
-    "undici": "^6.2.0",
+    "undici": "^6.21.3",
     "uuid": "^9.0.1",
     "uuidv4": "^6.2.13",
     "vectordb": "^0.4.20",
+    "vitest": "^3.1.4",
     "vscode-languageclient": "^8.0.2",
     "ws": "^8.13.0",
     "yarn": "^1.22.21"
+  },
+  "overrides": {
+    "vitest": {
+      "@types/node": "^16.18.119"
+    }
   }
 }

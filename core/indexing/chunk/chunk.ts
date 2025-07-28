@@ -1,7 +1,5 @@
 import { Chunk, ChunkWithoutID } from "../../index.js";
 import { countTokensAsync } from "../../llm/countTokens.js";
-import { extractMinimalStackTraceInfo } from "../../util/extractMinimalStackTraceInfo.js";
-import { Telemetry } from "../../util/posthog.js";
 import { supportedLanguages } from "../../util/treeSitter.js";
 import { getUriFileExtension, getUriPathBasename } from "../../util/uri.js";
 
@@ -15,7 +13,7 @@ export type ChunkDocumentParam = {
   digest: string;
 };
 
-async function* chunkDocumentWithoutId(
+export async function* chunkDocumentWithoutId(
   fileUri: string,
   contents: string,
   maxChunkSize: number,
@@ -31,10 +29,6 @@ async function* chunkDocumentWithoutId(
       }
       return;
     } catch (e: any) {
-      void Telemetry.capture("code_chunker_error", {
-        fileExtension: extension,
-        stack: extractMinimalStackTraceInfo(e.stack),
-      });
       // falls back to basicChunker
     }
   }
@@ -56,24 +50,25 @@ export async function* chunkDocument({
     maxChunkSize,
   )) {
     chunkPromises.push(
-      new Promise(async (resolve) => {
-        if ((await countTokensAsync(chunkWithoutId.content)) > maxChunkSize) {
-          // console.debug(
-          //   `Chunk with more than ${maxChunkSize} tokens constructed: `,
-          //   filepath,
-          //   countTokens(chunkWithoutId.content),
-          // );
-          return resolve(undefined);
-        }
-        resolve({
-          ...chunkWithoutId,
-          digest,
-          index,
-          filepath,
-        });
+      new Promise((resolve) => {
+        void (async () => {
+          if ((await countTokensAsync(chunkWithoutId.content)) > maxChunkSize) {
+            // console.debug(
+            //   `Chunk with more than ${maxChunkSize} tokens constructed: `,
+            //   filepath,
+            //   countTokens(chunkWithoutId.content),
+            // );
+            return resolve(undefined);
+          }
+          resolve({
+            ...chunkWithoutId,
+            digest,
+            index: index++,
+            filepath,
+          });
+        })();
       }),
     );
-    index++;
   }
   for await (const chunk of chunkPromises) {
     if (!chunk) {

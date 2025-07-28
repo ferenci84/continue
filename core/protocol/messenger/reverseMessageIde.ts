@@ -34,10 +34,6 @@ export class ReverseMessageIde {
   }
 
   private initializeListeners() {
-    this.on("getGitHubAuthToken", (data) => {
-      return this.ide.getGitHubAuthToken(data);
-    });
-
     this.on("getFileStats", (data) => {
       return this.ide.getFileStats(data.files);
     });
@@ -163,7 +159,11 @@ export class ReverseMessageIde {
     });
 
     this.on("getSearchResults", (data) => {
-      return this.ide.getSearchResults(data.query);
+      return this.ide.getSearchResults(data.query, data.maxResults);
+    });
+
+    this.on("getFileResults", (data) => {
+      return this.ide.getFileResults(data.pattern, data.maxResults);
     });
 
     this.on("getProblems", (data) => {

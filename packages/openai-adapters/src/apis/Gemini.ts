@@ -3,6 +3,7 @@ import { OpenAI } from "openai/index";
 import {
   ChatCompletion,
   ChatCompletionChunk,
+  ChatCompletionContentPartImage,
   ChatCompletionCreateParams,
   ChatCompletionCreateParamsNonStreaming,
   ChatCompletionCreateParamsStreaming,
@@ -14,6 +15,7 @@ import {
   Model,
 } from "openai/resources/index";
 
+import { v4 as uuidv4 } from "uuid";
 import { GeminiConfig } from "../types.js";
 import {
   chatChunk,
@@ -21,7 +23,13 @@ import {
   customFetch,
   embedding,
 } from "../util.js";
-import { GeminiToolFunctionDeclaration } from "../util/gemini-types.js";
+import {
+  convertOpenAIToolToGeminiFunction,
+  GeminiChatContent,
+  GeminiChatContentPart,
+  GeminiToolFunctionDeclaration,
+} from "../util/gemini-types.js";
+import { safeParseArgs } from "../util/parseArgs.js";
 import {
   BaseLlmApi,
   CreateRerankResponse,
@@ -48,9 +56,15 @@ export class GeminiApi implements BaseLlmApi {
   }
 
   private _oaiPartToGeminiPart(
-    part: OpenAI.Chat.Completions.ChatCompletionContentPart,
-  ) {
+    part:
+      | OpenAI.Chat.Completions.ChatCompletionContentPart
+      | OpenAI.Chat.Completions.ChatCompletionContentPartRefusal,
+  ): GeminiChatContentPart {
     switch (part.type) {
+      case "refusal":
+        return {
+          text: part.refusal,
+        };
       case "text":
         return {
           text: part.text,
@@ -62,13 +76,20 @@ export class GeminiApi implements BaseLlmApi {
         return {
           inlineData: {
             mimeType: "image/jpeg",
-            data: part.image_url?.url.split(",")[1],
+            data: (part as ChatCompletionContentPartImage).image_url?.url.split(
+              ",",
+            )[1],
           },
         };
     }
   }
 
-  private _convertBody(oaiBody: ChatCompletionCreateParams, url: string) {
+  public _convertBody(
+    oaiBody: ChatCompletionCreateParams,
+    url: string,
+    includeToolCallIds: boolean,
+    overrideIsV1?: boolean,
+  ) {
     const generationConfig: any = {};
 
     if (oaiBody.top_p) {
@@ -85,23 +106,75 @@ export class GeminiApi implements BaseLlmApi {
       generationConfig.stopSequences = stop.filter((x) => x.trim() !== "");
     }
 
-    const isV1API = url.includes("/v1/");
-    const contents = oaiBody.messages
+    const isV1API = overrideIsV1 ?? url.includes("/v1/");
+
+    const toolCallIdToNameMap = new Map<string, string>();
+    oaiBody.messages.forEach((msg) => {
+      if (msg.role === "assistant" && msg.tool_calls) {
+        msg.tool_calls.forEach((call) => {
+          toolCallIdToNameMap.set(call.id, call.function.name);
+        });
+      }
+    });
+
+    const contents: (GeminiChatContent | null)[] = oaiBody.messages
       .map((msg) => {
         if (msg.role === "system" && !isV1API) {
           return null; // Don't include system message in contents
         }
+
+        if (msg.role === "assistant" && msg.tool_calls?.length) {
+          for (const toolCall of msg.tool_calls) {
+            toolCallIdToNameMap.set(toolCall.id, toolCall.function.name);
+          }
+
+          return {
+            role: "model" as const,
+            parts: msg.tool_calls.map((toolCall) => ({
+              functionCall: {
+                id: includeToolCallIds ? toolCall.id : undefined,
+                name: toolCall.function.name,
+                args: safeParseArgs(
+                  toolCall.function.arguments,
+                  `Call: ${toolCall.function.name} ${toolCall.id}`,
+                ),
+              },
+            })),
+          };
+        }
+
+        if (msg.role === "tool") {
+          const functionName = toolCallIdToNameMap.get(msg.tool_call_id);
+          return {
+            role: "user" as const,
+            parts: [
+              {
+                functionResponse: {
+                  id: includeToolCallIds ? msg.tool_call_id : undefined,
+                  name: functionName ?? "unknown",
+                  response: {
+                    content:
+                      typeof msg.content === "string"
+                        ? msg.content
+                        : msg.content.map((part) => part.text).join(""),
+                  },
+                },
+              },
+            ],
+          };
+        }
+
         if (!msg.content) {
           return null;
         }
 
         return {
-          role: msg.role === "assistant" ? "model" : "user",
+          role:
+            msg.role === "assistant" ? ("model" as const) : ("user" as const),
           parts:
             typeof msg.content === "string"
               ? [{ text: msg.content }]
-              : // @ts-ignore
-                msg.content.map(this._oaiPartToGeminiPart),
+              : msg.content.map(this._oaiPartToGeminiPart),
         };
       })
       .filter((c) => c !== null);
@@ -110,7 +183,7 @@ export class GeminiApi implements BaseLlmApi {
     const finalBody: any = {
       generationConfig,
       contents,
-      // if this.systemMessage is defined, reformat it for Gemini API
+      // if there is a system message, reformat it for Gemini API
       ...(sysMsg &&
         !isV1API && {
           systemInstruction: { parts: [{ text: sysMsg.content }] },
@@ -125,71 +198,15 @@ export class GeminiApi implements BaseLlmApi {
         // Same difference
         const functions: GeminiToolFunctionDeclaration[] = [];
         oaiBody.tools.forEach((tool) => {
-          if (tool.function.description && tool.function.name) {
-            const fn: GeminiToolFunctionDeclaration = {
-              description: tool.function.description,
-              name: tool.function.name,
-            };
-
-            if (
-              tool.function.parameters &&
-              "type" in tool.function.parameters
-              // && typeof tool.function.parameters.type === "string"
-            ) {
-              if (tool.function.parameters.type === "object") {
-                // Gemini can't take an empty object
-                // So if empty object param is present just don't add parameters
-                if (
-                  JSON.stringify(tool.function.parameters.properties) === "{}"
-                ) {
-                  functions.push(fn);
-                  return;
-                }
-              }
-              // Helper function to recursively clean JSON Schema objects
-              const cleanJsonSchema = (schema: any): any => {
-                if (!schema || typeof schema !== "object") return schema;
-
-                if (Array.isArray(schema)) {
-                  return schema.map(cleanJsonSchema);
-                }
-
-                const {
-                  $schema,
-                  additionalProperties,
-                  default: defaultValue,
-                  ...rest
-                } = schema;
-
-                // Recursively clean nested properties
-                if (rest.properties) {
-                  rest.properties = Object.entries(rest.properties).reduce(
-                    (acc, [key, value]) => ({
-                      ...acc,
-                      [key]: cleanJsonSchema(value),
-                    }),
-                    {},
-                  );
-                }
-
-                // Clean items in arrays
-                if (rest.items) {
-                  rest.items = cleanJsonSchema(rest.items);
-                }
-
-                return rest;
-              };
-
-              // Clean the parameters and convert type to uppercase
-              const cleanedParams = cleanJsonSchema(tool.function.parameters);
-              fn.parameters = {
-                ...cleanedParams,
-                type: (tool.function.parameters as any)?.type?.toUpperCase(),
-              };
-            }
-            functions.push(fn);
+          try {
+            functions.push(convertOpenAIToolToGeminiFunction(tool));
+          } catch (e) {
+            console.warn(
+              `Failed to convert tool to gemini function definition. Skipping: ${JSON.stringify(tool, null, 2)}`,
+            );
           }
         });
+
         if (functions.length) {
           finalBody.tools = [
             {
@@ -238,22 +255,9 @@ export class GeminiApi implements BaseLlmApi {
     };
   }
 
-  async *chatCompletionStream(
-    body: ChatCompletionCreateParamsStreaming,
-    signal: AbortSignal,
-  ): AsyncGenerator<ChatCompletionChunk> {
-    const apiURL = new URL(
-      `models/${body.model}:streamGenerateContent?key=${this.config.apiKey}`,
-      this.apiBase,
-    ).toString();
-    const resp = await customFetch(this.config.requestOptions)(apiURL, {
-      method: "POST",
-      body: JSON.stringify(this._convertBody(body, apiURL)),
-      signal,
-    });
-
+  async *handleStreamResponse(response: any, model: string) {
     let buffer = "";
-    for await (const chunk of streamResponse(resp as any)) {
+    for await (const chunk of streamResponse(response as any)) {
       buffer += chunk;
       if (buffer.startsWith("[")) {
         buffer = buffer.slice(1);
@@ -281,22 +285,23 @@ export class GeminiApi implements BaseLlmApi {
           throw new Error(data.error.message);
         }
 
-        const content = data?.candidates?.[0]?.content;
-        if (content) {
-          for (const part of content.parts) {
+        // In case of max tokens reached, gemini will sometimes return content with no parts, even though that doesn't match the API spec
+        const contentParts = data?.candidates?.[0]?.content?.parts;
+        if (contentParts) {
+          for (const part of contentParts) {
             if ("text" in part) {
               yield chatChunk({
                 content: part.text,
-                model: body.model,
+                model,
               });
             } else if ("functionCall" in part) {
               yield chatChunkFromDelta({
-                model: body.model,
+                model,
                 delta: {
                   tool_calls: [
                     {
                       index: 0,
-                      id: "", // Not supported by Gemini
+                      id: part.functionCall.id ?? uuidv4(),
                       type: "function",
                       function: {
                         name: part.functionCall.name,
@@ -318,6 +323,23 @@ export class GeminiApi implements BaseLlmApi {
         buffer = "";
       }
     }
+  }
+
+  async *chatCompletionStream(
+    body: ChatCompletionCreateParamsStreaming,
+    signal: AbortSignal,
+  ): AsyncGenerator<ChatCompletionChunk> {
+    const apiURL = new URL(
+      `models/${body.model}:streamGenerateContent?key=${this.config.apiKey}`,
+      this.apiBase,
+    ).toString();
+    const convertedBody = this._convertBody(body, apiURL, true);
+    const resp = await customFetch(this.config.requestOptions)(apiURL, {
+      method: "POST",
+      body: JSON.stringify(convertedBody),
+      signal,
+    });
+    yield* this.handleStreamResponse(resp, body.model);
   }
   completionNonStream(
     body: CompletionCreateParamsNonStreaming,

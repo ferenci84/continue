@@ -1,54 +1,12 @@
 const fs = require("fs");
-const ncp = require("ncp").ncp;
 const path = require("path");
+
+const ncp = require("ncp").ncp;
 const { rimrafSync } = require("rimraf");
-const {
-  validateFilesPresent,
-  execCmdSync,
-  autodetectPlatformAndArch,
-} = require("../../../scripts/util/index");
+
+const { execCmdSync } = require("../../../scripts/util/index");
 
 const continueDir = path.join(__dirname, "..", "..", "..");
-
-function copyConfigSchema() {
-  // Modify and copy for .continuerc.json
-  const schema = JSON.parse(fs.readFileSync("config_schema.json", "utf8"));
-  schema.$defs.SerializedContinueConfig.properties.mergeBehavior = {
-    type: "string",
-    enum: ["merge", "overwrite"],
-    default: "merge",
-    title: "Merge behavior",
-    markdownDescription:
-      "If set to 'merge', .continuerc.json will be applied on top of config.json (arrays and objects are merged). If set to 'overwrite', then every top-level property of .continuerc.json will overwrite that property from config.json.",
-    "x-intellij-html-description":
-      "<p>If set to <code>merge</code>, <code>.continuerc.json</code> will be applied on top of <code>config.json</code> (arrays and objects are merged). If set to <code>overwrite</code>, then every top-level property of <code>.continuerc.json</code> will overwrite that property from <code>config.json</code>.</p>",
-  };
-  fs.writeFileSync("continue_rc_schema.json", JSON.stringify(schema, null, 2));
-
-  // Copy config schemas to intellij
-  fs.copyFileSync(
-    "config_schema.json",
-    path.join(
-      "..",
-      "intellij",
-      "src",
-      "main",
-      "resources",
-      "config_schema.json",
-    ),
-  );
-  fs.copyFileSync(
-    "continue_rc_schema.json",
-    path.join(
-      "..",
-      "intellij",
-      "src",
-      "main",
-      "resources",
-      "continue_rc_schema.json",
-    ),
-  );
-}
 
 function copyTokenizers() {
   fs.copyFileSync(
@@ -62,22 +20,6 @@ function copyTokenizers() {
     path.join(__dirname, "../out/llamaTokenizer.mjs"),
   );
   console.log("[info] Copied llamaTokenizer");
-}
-
-function installNodeModules() {
-  // Make sure we are in the right directory
-  if (!process.cwd().endsWith("vscode")) {
-    process.chdir(path.join(continueDir, "extensions", "vscode"));
-  }
-
-  // Install node_modules //
-  execCmdSync("npm install");
-  console.log("[info] npm install in extensions/vscode completed");
-
-  process.chdir(path.join(continueDir, "gui"));
-
-  execCmdSync("npm install");
-  console.log("[info] npm install in gui completed");
 }
 
 async function buildGui(isGhAction) {
@@ -287,6 +229,9 @@ async function copyNodeModules() {
         }),
     ),
   );
+
+  // delete esbuild/bin because platform-specific @esbuild is downloaded
+  fs.rmdirSync(`out/node_modules/esbuild/bin`, { recursive: true });
 
   console.log(`[info] Copied ${NODE_MODULES_TO_COPY.join(", ")}`);
 }
@@ -511,9 +456,22 @@ async function copyScripts() {
   console.log("[info] Copied script files");
 }
 
+// We can't simply touch one of our files to trigger a rebuild, because
+// esbuild doesn't always use modifications times to detect changes -
+// for example, if it finds a file changed within the last 3 seconds,
+// it will fall back to full-contents-comparison for that file
+//
+// So to facilitate development workflows, we always include a timestamp string
+// in the build
+function writeBuildTimestamp() {
+  fs.writeFileSync(
+    path.join(continueDir, "extensions/vscode", "src/.buildTimestamp.ts"),
+    `export default "${new Date().toISOString()}";\n`,
+  );
+}
+
 module.exports = {
-  copyConfigSchema,
-  installNodeModules,
+  continueDir,
   buildGui,
   copyOnnxRuntimeFromNodeModules,
   copyTreeSitterWasms,
@@ -526,4 +484,5 @@ module.exports = {
   downloadRipgrepBinary,
   copyTokenizers,
   copyScripts,
+  writeBuildTimestamp,
 };

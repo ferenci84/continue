@@ -1,5 +1,5 @@
 import { FromIdeProtocol } from "..";
-import { GetGhTokenArgs, ToIdeFromWebviewOrCoreProtocol } from "../ide";
+import { ToIdeFromWebviewOrCoreProtocol } from "../ide";
 
 import type {
   ContinueRcJson,
@@ -13,6 +13,7 @@ import type {
   Problem,
   Range,
   RangeInFile,
+  SignatureHelp,
   TerminalOptions,
   Thread,
 } from "../..";
@@ -40,9 +41,19 @@ export class MessageIde implements IDE {
   fileExists(fileUri: string): Promise<boolean> {
     return this.request("fileExists", { filepath: fileUri });
   }
+
   async gotoDefinition(location: Location): Promise<RangeInFile[]> {
     return this.request("gotoDefinition", { location });
   }
+
+  async gotoTypeDefinition(location: Location): Promise<RangeInFile[]> {
+    return this.request("gotoTypeDefinition", { location });
+  }
+
+  async getSignatureHelp(location: Location): Promise<SignatureHelp | null> {
+    return this.request("getSignatureHelp", { location });
+  }
+
   onDidChangeActiveTextEditor(callback: (fileUri: string) => void): void {
     this.on("didChangeActiveTextEditor", (data) => callback(data.filepath));
   }
@@ -50,15 +61,14 @@ export class MessageIde implements IDE {
   getIdeSettings(): Promise<IdeSettings> {
     return this.request("getIdeSettings", undefined);
   }
-  getGitHubAuthToken(args: GetGhTokenArgs): Promise<string | undefined> {
-    return this.request("getGitHubAuthToken", args);
-  }
+
   getFileStats(files: string[]): Promise<FileStatsMap> {
     return this.request("getFileStats", { files });
   }
   getGitRootPath(dir: string): Promise<string | undefined> {
     return this.request("getGitRootPath", { dir });
   }
+
   listDir(dir: string): Promise<[string, FileType][]> {
     return this.request("listDir", { dir });
   }
@@ -103,6 +113,10 @@ export class MessageIde implements IDE {
 
   isTelemetryEnabled(): Promise<boolean> {
     return this.request("isTelemetryEnabled", undefined);
+  }
+
+  isWorkspaceRemote(): Promise<boolean> {
+    return this.request("isWorkspaceRemote", undefined);
   }
 
   getUniqueId(): Promise<string> {
@@ -167,6 +181,7 @@ export class MessageIde implements IDE {
   async saveFile(fileUri: string): Promise<void> {
     await this.request("saveFile", { filepath: fileUri });
   }
+
   async readFile(fileUri: string): Promise<string> {
     return await this.request("readFile", { filepath: fileUri });
   }
@@ -183,8 +198,12 @@ export class MessageIde implements IDE {
     return this.request("getPinnedFiles", undefined);
   }
 
-  getSearchResults(query: string): Promise<string> {
-    return this.request("getSearchResults", { query });
+  getSearchResults(query: string, maxResults?: number): Promise<string> {
+    return this.request("getSearchResults", { query, maxResults });
+  }
+
+  getFileResults(pattern: string): Promise<string[]> {
+    return this.request("getFileResults", { pattern });
   }
 
   getProblems(fileUri: string): Promise<Problem[]> {

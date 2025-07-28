@@ -4,7 +4,7 @@ import { RunResult } from "sqlite3";
 
 import { IContinueServerClient } from "../../continueServer/interface.js";
 import { Chunk, IndexTag, IndexingProgressUpdate } from "../../index.js";
-import { DatabaseConnection, SqliteDb, tagToString } from "../refreshIndex.js";
+import { DatabaseConnection, SqliteDb } from "../refreshIndex.js";
 import {
   IndexResultType,
   MarkCompleteCallback,
@@ -13,8 +13,9 @@ import {
   type CodebaseIndex,
 } from "../types.js";
 
-import { chunkDocument, shouldChunk } from "./chunk.js";
 import { getUriPathBasename } from "../../util/uri.js";
+import { tagToString } from "../utils.js";
+import { chunkDocument, shouldChunk } from "./chunk.js";
 
 export class ChunkCodebaseIndex implements CodebaseIndex {
   relativeExpectedTime: number = 1;
@@ -80,9 +81,9 @@ export class ChunkCodebaseIndex implements CodebaseIndex {
         `
         INSERT INTO chunk_tags (chunkId, tag)
         SELECT id, ? FROM chunks
-        WHERE cacheKey = ? AND path = ?
+        WHERE cacheKey = ?
       `,
-        [tagString, item.cacheKey, item.path],
+        [tagString, item.cacheKey],
       );
       await markComplete([item], IndexResultType.AddTag);
       accumulatedProgress += 1 / results.addTag.length / 4;
@@ -158,7 +159,8 @@ export class ChunkCodebaseIndex implements CodebaseIndex {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         tag TEXT NOT NULL,
         chunkId INTEGER NOT NULL,
-        FOREIGN KEY (chunkId) REFERENCES chunks (id)
+        FOREIGN KEY (chunkId) REFERENCES chunks (id),
+        UNIQUE (tag, chunkId)
     )`);
   }
 

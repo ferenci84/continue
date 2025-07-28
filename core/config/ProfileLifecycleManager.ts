@@ -21,6 +21,8 @@ export interface ProfileDescription {
   id: string;
   iconUrl: string;
   errors: ConfigValidationError[] | undefined;
+  uri: string;
+  rawYaml?: string;
 }
 
 export interface OrganizationDescription {
@@ -29,6 +31,16 @@ export interface OrganizationDescription {
   name: string;
   slug: string | undefined; // TODO: This doesn't need to be undefined, just doing while transitioning the backend
 }
+
+export type OrgWithProfiles = OrganizationDescription & {
+  profiles: ProfileLifecycleManager[];
+  currentProfile: ProfileLifecycleManager | null;
+};
+
+export type SerializedOrgWithProfiles = OrganizationDescription & {
+  profiles: ProfileDescription[];
+  selectedProfileId: string | null;
+};
 
 export class ProfileLifecycleManager {
   private savedConfigResult: ConfigResult<ContinueConfig> | undefined;
@@ -75,32 +87,40 @@ export class ProfileLifecycleManager {
     }
 
     // Set pending config promise
-    this.pendingConfigPromise = new Promise(async (resolve, reject) => {
-      let result: ConfigResult<ContinueConfig>;
-      try {
-        result = await this.profileLoader.doLoadConfig();
-      } catch (e: any) {
-        result = {
-          errors: [
-            {
-              fatal: true,
-              message: e.message,
-            },
-          ],
-          config: undefined,
-          configLoadInterrupted: true,
-        };
-      }
+    this.pendingConfigPromise = new Promise((resolve) => {
+      void (async () => {
+        let result: ConfigResult<ContinueConfig>;
+        // This try catch is expected to catch high-level errors that aren't block-specific
+        // Like invalid json, invalid yaml, file read errors, etc.
+        // NOT block-specific loading errors
+        try {
+          result = await this.profileLoader.doLoadConfig();
+        } catch (e) {
+          const message =
+            e instanceof Error
+              ? `${e.message}\n${e.stack ? e.stack : ""}`
+              : "Error loading config";
+          result = {
+            errors: [
+              {
+                fatal: true,
+                message,
+              },
+            ],
+            config: undefined,
+            configLoadInterrupted: true,
+          };
+        }
 
-      if (result.config) {
-        // Add registered context providers
-        result.config.contextProviders = (
-          result.config.contextProviders ?? []
-        ).concat(additionalContextProviders);
-      }
+        if (result.config) {
+          // Add registered context providers
+          result.config.contextProviders = (
+            result.config.contextProviders ?? []
+          ).concat(additionalContextProviders);
+        }
 
-      this.savedConfigResult = result;
-      resolve(result);
+        resolve(result);
+      })();
     });
 
     // Wait for the config promise to resolve

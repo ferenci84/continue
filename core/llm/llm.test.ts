@@ -22,6 +22,20 @@ const COMPLETION_OPTIONS: Partial<CompletionOptions> = {
   // maxTokens: 5,
 };
 
+/**
+ * Retries a test function if it fails on the first attempt
+ * @param testFn The test function to run
+ * @returns A function that will retry once if the test fails
+ */
+const retryOnce = (testFn: () => Promise<any>) => async () => {
+  try {
+    return await testFn();
+  } catch (error) {
+    console.log("Test failed on first attempt, retrying once...");
+    return await testFn();
+  }
+};
+
 function testLLM(
   llm: BaseLLM,
   {
@@ -47,7 +61,7 @@ function testLLM(
   describe(llm.providerName + "/" + llm.model, () => {
     test(
       "Stream Chat works",
-      async () => {
+      retryOnce(async () => {
         let total = "";
         for await (const chunk of llm.streamChat(
           [{ role: "user", content: "Hi" }],
@@ -58,13 +72,13 @@ function testLLM(
 
         expect(total.length).toBeGreaterThan(0);
         return;
-      },
+      }),
       timeout,
     );
 
     test(
       "Stream Complete works",
-      async () => {
+      retryOnce(async () => {
         let total = "";
         for await (const chunk of llm.streamComplete(
           "Hi",
@@ -75,13 +89,13 @@ function testLLM(
 
         expect(total.length).toBeGreaterThan(0);
         return;
-      },
+      }),
       timeout,
     );
 
     test(
       "Complete works",
-      async () => {
+      retryOnce(async () => {
         const completion = await llm.complete(
           "Hi",
           new AbortController().signal,
@@ -89,14 +103,14 @@ function testLLM(
 
         expect(completion.length).toBeGreaterThan(0);
         return;
-      },
+      }),
       timeout,
     );
 
     if (testFim) {
       test(
         "FIM works",
-        async () => {
+        retryOnce(async () => {
           let total = "";
           for await (const chunk of llm.streamFim(
             "Hi",
@@ -108,7 +122,7 @@ function testLLM(
 
           expect(total.length).toBeGreaterThan(0);
           return;
-        },
+        }),
         timeout,
       );
     }
@@ -116,7 +130,7 @@ function testLLM(
     if (testToolCall) {
       test(
         "Tool Call works",
-        async () => {
+        retryOnce(async () => {
           let args = "";
           let isFirstChunk = true;
           for await (const chunk of llm.streamChat(
@@ -140,16 +154,14 @@ function testLLM(
                     },
                   },
                   type: "function",
-                  wouldLikeTo: "Say hello",
+                  wouldLikeTo: "say hello",
+                  isCurrently: "saying hello",
+                  hasAlready: "said hello",
                   readonly: true,
+                  group: "Hello",
                 },
               ],
-              toolChoice: {
-                type: "function",
-                function: {
-                  name: "say_hello",
-                },
-              },
+              toolChoice: { type: "function", function: { name: "say_hello" } },
             },
           )) {
             const typedChunk = chunk as AssistantChatMessage;
@@ -172,7 +184,7 @@ function testLLM(
 
           const parsedArgs = JSON.parse(args);
           expect(parsedArgs.name).toBe("Nate");
-        },
+        }),
         timeout,
       );
     }
@@ -194,10 +206,7 @@ describe("LLM", () => {
       model: "claude-3-5-sonnet-latest",
       apiKey: process.env.ANTHROPIC_API_KEY,
     }),
-    {
-      skip: false,
-      testToolCall: true,
-    },
+    { skip: false, testToolCall: true },
   );
   testLLM(new OpenAI({ apiKey: process.env.OPENAI_API_KEY, model: "gpt-4o" }), {
     skip: false,
@@ -205,10 +214,11 @@ describe("LLM", () => {
   });
   testLLM(
     new OpenAI({ apiKey: process.env.OPENAI_API_KEY, model: "o1-preview" }),
-    { skip: false, timeout: 20000 },
+    { skip: false, timeout: 60000 },
   );
   testLLM(new OpenAI({ apiKey: process.env.OPENAI_API_KEY, model: "o1" }), {
     skip: false,
+    timeout: 60000,
   });
   testLLM(
     new Gemini({
@@ -222,7 +232,7 @@ describe("LLM", () => {
       apiKey: process.env.MISTRAL_API_KEY,
       model: "codestral-latest",
     }),
-    { testFim: true, skip: false },
+    { testFim: true, skip: false, testToolCall: true, timeout: 60000 },
   );
   testLLM(
     new Azure({
@@ -237,11 +247,10 @@ describe("LLM", () => {
   );
   testLLM(
     new Azure({
-      apiKey: process.env.AZURE_FOUNDRY_API_KEY,
-      model: "codestral-latest",
-      apiBase:
-        "https://codestral-2501-continue-testing.eastus.models.ai.azure.com",
-      apiType: "azure-foundry",
+      apiKey: process.env.AZURE_FOUNDRY_CODESTRAL_API_KEY,
+      model: "Codestral-2501",
+      apiBase: "https://continue-foundry-resource.services.ai.azure.com",
+      env: { apiType: "azure-foundry", apiVersion: "2024-05-01-preview" },
     }),
     { testFim: false, skip: false, timeout: 20000 },
   );

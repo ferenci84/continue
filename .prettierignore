@@ -15,3 +15,11 @@ gui/dist
 CHANGELOG.md
 **/continue_tutorial.py
 **/node_modules
+**/CODEOWNERS
+core/vendor
+coverage
+e2e
+extensions/vscode/gui
+extensions/vscode/models
+extensions/intellij/src/main/resources
+packages/continue-sdk

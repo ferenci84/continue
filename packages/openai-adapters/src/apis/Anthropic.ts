@@ -8,10 +8,22 @@ import {
   Completion,
   CompletionCreateParamsNonStreaming,
   CompletionCreateParamsStreaming,
+  CompletionUsage,
 } from "openai/resources/index";
 import { ChatCompletionCreateParams } from "openai/src/resources/index.js";
 import { AnthropicConfig } from "../types.js";
-import { chatChunk, chatChunkFromDelta, customFetch } from "../util.js";
+import {
+  chatChunk,
+  chatChunkFromDelta,
+  customFetch,
+  usageChatChunk,
+} from "../util.js";
+import { EMPTY_CHAT_COMPLETION } from "../util/emptyChatCompletion.js";
+import { safeParseArgs } from "../util/parseArgs.js";
+import {
+  CACHING_STRATEGIES,
+  CachingStrategyName,
+} from "./AnthropicCachingStrategies.js";
 import {
   BaseLlmApi,
   CreateRerankResponse,
@@ -22,7 +34,11 @@ import {
 export class AnthropicApi implements BaseLlmApi {
   apiBase: string = "https://api.anthropic.com/v1/";
 
-  constructor(protected config: AnthropicConfig) {
+  constructor(
+    protected config: AnthropicConfig & {
+      cachingStrategy?: CachingStrategyName;
+    },
+  ) {
     this.apiBase = config.apiBase ?? this.apiBase;
     if (!this.apiBase.endsWith("/")) {
       this.apiBase += "/";
@@ -30,6 +46,16 @@ export class AnthropicApi implements BaseLlmApi {
   }
 
   private _convertBody(oaiBody: ChatCompletionCreateParams) {
+    // Step 1: Convert to clean Anthropic body (no caching)
+    const cleanBody = this._convertToCleanAnthropicBody(oaiBody);
+
+    // Step 2: Apply caching strategy
+    const cachingStrategy =
+      CACHING_STRATEGIES[this.config.cachingStrategy ?? "systemAndTools"];
+    return cachingStrategy(cleanBody);
+  }
+
+  public _convertToCleanAnthropicBody(oaiBody: ChatCompletionCreateParams) {
     let stop = undefined;
     if (oaiBody.stop && Array.isArray(oaiBody.stop)) {
       stop = oaiBody.stop.filter((x) => x.trim() !== "");
@@ -37,11 +63,22 @@ export class AnthropicApi implements BaseLlmApi {
       stop = [oaiBody.stop];
     }
 
+    const systemMessage = oaiBody.messages.find(
+      (msg) => msg.role === "system",
+    )?.content;
+
     const anthropicBody = {
       messages: this._convertMessages(
         oaiBody.messages.filter((msg) => msg.role !== "system"),
       ),
-      system: oaiBody.messages.find((msg) => msg.role === "system")?.content,
+      system: systemMessage
+        ? [
+            {
+              type: "text",
+              text: systemMessage,
+            },
+          ]
+        : systemMessage,
       top_p: oaiBody.top_p,
       temperature: oaiBody.temperature,
       max_tokens: oaiBody.max_tokens ?? 4096, // max_tokens is required
@@ -71,6 +108,35 @@ export class AnthropicApi implements BaseLlmApi {
     msgs: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   ): any[] {
     const messages = msgs.map((message) => {
+      if (message.role === "tool") {
+        return {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: message.tool_call_id,
+              content:
+                typeof message.content === "string"
+                  ? message.content
+                  : message.content.map((part) => part.text).join(""),
+            },
+          ],
+        };
+      } else if (message.role === "assistant" && message.tool_calls) {
+        return {
+          role: "assistant",
+          content: message.tool_calls.map((toolCall) => ({
+            type: "tool_use",
+            id: toolCall.id,
+            name: toolCall.function?.name,
+            input: safeParseArgs(
+              toolCall.function?.arguments,
+              `${toolCall.function?.name} ${toolCall.id}`,
+            ),
+          })),
+        };
+      }
+
       if (!Array.isArray(message.content)) {
         return message;
       }
@@ -112,12 +178,17 @@ export class AnthropicApi implements BaseLlmApi {
           "Content-Type": "application/json",
           Accept: "application/json",
           "anthropic-version": "2023-06-01",
+          "anthropic-beta": "prompt-caching-2024-07-31",
           "x-api-key": this.config.apiKey,
         },
         body: JSON.stringify(this._convertBody(body)),
         signal,
       },
     );
+
+    if (response.status === 499) {
+      return EMPTY_CHAT_COMPLETION;
+    }
 
     const completion = (await response.json()) as any;
     return {
@@ -130,6 +201,9 @@ export class AnthropicApi implements BaseLlmApi {
           completion.usage.input_tokens + completion.usage.output_tokens,
         completion_tokens: completion.usage.output_tokens,
         prompt_tokens: completion.usage.input_tokens,
+        prompt_tokens_details: {
+          cached_tokens: completion.usage.cache_read_input_tokens || 0,
+        },
       },
       choices: [
         {
@@ -145,28 +219,17 @@ export class AnthropicApi implements BaseLlmApi {
       ],
     };
   }
-  async *chatCompletionStream(
-    body: ChatCompletionCreateParamsStreaming,
-    signal: AbortSignal,
-  ): AsyncGenerator<ChatCompletionChunk, any, unknown> {
-    body.messages;
-    const response = await customFetch(this.config.requestOptions)(
-      new URL("messages", this.apiBase),
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          "anthropic-version": "2023-06-01",
-          "x-api-key": this.config.apiKey,
-        },
-        body: JSON.stringify(this._convertBody(body)),
-        signal,
-      },
-    );
 
+  // This is split off so e.g. VertexAI can use it
+  async *handleStreamResponse(response: any, model: string) {
     let lastToolUseId: string | undefined;
     let lastToolUseName: string | undefined;
+
+    const usage: CompletionUsage = {
+      completion_tokens: 0,
+      prompt_tokens: 0,
+      total_tokens: 0,
+    };
     for await (const value of streamSse(response as any)) {
       // https://docs.anthropic.com/en/api/messages-streaming#event-types
       switch (value.type) {
@@ -176,13 +239,22 @@ export class AnthropicApi implements BaseLlmApi {
             lastToolUseName = value.content_block.name;
           }
           break;
+        case "message_start":
+          usage.prompt_tokens = value.message.usage.input_tokens;
+          usage.prompt_tokens_details = {
+            cached_tokens: value.message.usage.cache_read_input_tokens || 0,
+          };
+          break;
+        case "message_delta":
+          usage.completion_tokens = value.usage.output_tokens;
+          break;
         case "content_block_delta":
           // https://docs.anthropic.com/en/api/messages-streaming#delta-types
           switch (value.delta.type) {
             case "text_delta":
               yield chatChunk({
                 content: value.delta.text,
-                model: body.model,
+                model,
               });
               break;
             case "input_json_delta":
@@ -190,7 +262,7 @@ export class AnthropicApi implements BaseLlmApi {
                 throw new Error("No tool use found");
               }
               yield chatChunkFromDelta({
-                model: body.model,
+                model,
                 delta: {
                   tool_calls: [
                     {
@@ -216,6 +288,37 @@ export class AnthropicApi implements BaseLlmApi {
           break;
       }
     }
+
+    yield usageChatChunk({
+      model,
+      usage: {
+        ...usage,
+        total_tokens: usage.completion_tokens + usage.prompt_tokens,
+      },
+    });
+  }
+
+  async *chatCompletionStream(
+    body: ChatCompletionCreateParamsStreaming,
+    signal: AbortSignal,
+  ): AsyncGenerator<ChatCompletionChunk, any, unknown> {
+    body.messages;
+    const response = await customFetch(this.config.requestOptions)(
+      new URL("messages", this.apiBase),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "prompt-caching-2024-07-31",
+          "x-api-key": this.config.apiKey,
+        },
+        body: JSON.stringify(this._convertBody(body)),
+        signal,
+      },
+    );
+    yield* this.handleStreamResponse(response, body.model);
   }
   async completionNonStream(
     body: CompletionCreateParamsNonStreaming,

@@ -1,5 +1,4 @@
 import { Chunk, LLMOptions } from "../../index.js";
-import { withExponentialBackoff } from "../../util/withExponentialBackoff.js";
 import { BaseLLM } from "../index.js";
 
 class HuggingFaceTEIEmbeddingsProvider extends BaseLLM {
@@ -26,44 +25,43 @@ class HuggingFaceTEIEmbeddingsProvider extends BaseLLM {
       });
   }
 
-  async embed(chunks: string[]) {
-    const batchedChunks = this.getBatchedChunks(chunks);
+  async _embed(batch: string[]): Promise<number[][]> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
 
-    const results = await Promise.all(
-      batchedChunks.map((batch) => this.doEmbedRequest(batch)),
-    );
-    return results.flat();
-  }
+    if (this.apiKey) {
+      headers["Authorization"] = `Bearer ${this.apiKey}`;
+    }
 
-  async doEmbedRequest(batch: string[]): Promise<number[][]> {
-    const resp = await withExponentialBackoff<Response>(() =>
-      this.fetch(new URL("embed", this.apiBase), {
-        method: "POST",
-        body: JSON.stringify({
-          inputs: batch,
-        }),
-        headers: {
-          "Content-Type": "application/json",
-        },
+    const resp = await this.fetch(new URL("embed", this.apiBase), {
+      method: "POST",
+      body: JSON.stringify({
+        inputs: batch,
       }),
-    );
+      headers,
+    });
     if (!resp.ok) {
       const text = await resp.text();
-      const embedError = JSON.parse(text) as TEIEmbedErrorResponse;
-      if (!embedError.error_type || !embedError.error) {
-        throw new Error(text);
+      let teiError: TEIEmbedErrorResponse | null = null;
+      try {
+        teiError = JSON.parse(text);
+      } catch (e) {
+        console.log(`Failed to parse TEI embed error response:\n${text}`, e);
       }
-      throw new TEIEmbedError(embedError);
+      if (teiError && (teiError.error_type || teiError.error)) {
+        throw new TEIEmbedError(teiError);
+      }
+      throw new Error(text);
     }
     return (await resp.json()) as number[][];
   }
 
   async doInfoRequest(): Promise<TEIInfoResponse> {
-    const resp = await withExponentialBackoff<Response>(() =>
-      this.fetch(new URL("info", this.apiBase), {
-        method: "GET",
-      }),
-    );
+    // TODO - need to use custom fetch for this request?
+    const resp = await this.fetch(new URL("info", this.apiBase), {
+      method: "GET",
+    });
     if (!resp.ok) {
       throw new Error(await resp.text());
     }
@@ -79,7 +77,7 @@ class HuggingFaceTEIEmbeddingsProvider extends BaseLLM {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
     }
 
-    const resp = await fetch(new URL("rerank", this.apiBase), {
+    const resp = await this.fetch(new URL("rerank", this.apiBase), {
       method: "POST",
       headers,
       body: JSON.stringify({

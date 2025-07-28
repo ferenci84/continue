@@ -1,34 +1,35 @@
-import { useEffect, useMemo } from "react";
+import { OnboardingModes } from "core/protocol/core";
+import { useContext, useEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import styled from "styled-components";
-import { CustomScrollbarDiv, defaultBorderRadius } from ".";
+import { CustomScrollbarDiv } from ".";
 import { AuthProvider } from "../context/Auth";
+import { IdeMessengerContext } from "../context/IdeMessenger";
+import { LocalStorageProvider } from "../context/LocalStorage";
 import { useWebviewListener } from "../hooks/useWebviewListener";
 import { useAppDispatch, useAppSelector } from "../redux/hooks";
-import { selectUseHub } from "../redux/selectors";
-import { focusEdit, setEditStatus } from "../redux/slices/editModeState";
-import {
-  addCodeToEdit,
-  newSession,
-  selectIsInEditMode,
-  setMode,
-  updateApplyState,
-} from "../redux/slices/sessionSlice";
-import { setShowDialog } from "../redux/slices/uiSlice";
-import { exitEditMode } from "../redux/thunks";
-import { loadLastSession, saveCurrentSession } from "../redux/thunks/session";
-import { getFontSize, isMetaEquivalentKeyPressed } from "../util";
+import { setCodeToEdit } from "../redux/slices/editState";
+import { setDialogMessage, setShowDialog } from "../redux/slices/uiSlice";
+import { enterEdit, exitEdit } from "../redux/thunks/edit";
+import { saveCurrentSession } from "../redux/thunks/session";
+import { fontSize, isMetaEquivalentKeyPressed } from "../util";
 import { incrementFreeTrialCount } from "../util/freeTrial";
 import { ROUTES } from "../util/navigation";
+import { FatalErrorIndicator } from "./config/FatalErrorNotice";
 import TextDialog from "./dialogs";
-import Footer from "./Footer";
-import { isNewUserOnboarding, useOnboardingCard } from "./OnboardingCard";
+import { GenerateRuleDialog } from "./GenerateRuleDialog";
+import { LumpProvider } from "./mainInput/Lump/LumpContext";
+import { useMainEditor } from "./mainInput/TipTapEditor";
+import {
+  isNewUserOnboarding,
+  OnboardingCard,
+  useOnboardingCard,
+} from "./OnboardingCard";
 import OSRContextMenu from "./OSRContextMenu";
 import PostHogPageView from "./PosthogPageView";
 
 const LayoutTopDiv = styled(CustomScrollbarDiv)`
   height: 100%;
-  border-radius: ${defaultBorderRadius};
   position: relative;
   overflow-x: hidden;
 `;
@@ -45,31 +46,31 @@ const Layout = () => {
   const location = useLocation();
   const dispatch = useAppDispatch();
   const onboardingCard = useOnboardingCard();
-  const { pathname } = useLocation();
+  const ideMessenger = useContext(IdeMessengerContext);
+  const currentSessionId = useAppSelector((state) => state.session.id);
 
-  const configError = useAppSelector((state) => state.config.configError);
-
-  const hasFatalErrors = useMemo(() => {
-    return configError?.some((error) => error.fatal);
-  }, [configError]);
-
+  const { mainEditor } = useMainEditor();
   const dialogMessage = useAppSelector((state) => state.ui.dialogMessage);
 
   const showDialog = useAppSelector((state) => state.ui.showDialog);
+  const isInEdit = useAppSelector((store) => store.session.isInEdit);
 
   useWebviewListener(
     "newSession",
     async () => {
       navigate(ROUTES.HOME);
-      await dispatch(
-        saveCurrentSession({
-          openNewSession: true,
-          generateTitle: true,
-        }),
-      );
-      dispatch(exitEditMode());
+      if (isInEdit) {
+        await dispatch(exitEdit({}));
+      } else {
+        await dispatch(
+          saveCurrentSession({
+            openNewSession: true,
+            generateTitle: true,
+          }),
+        );
+      }
     },
-    [],
+    [isInEdit],
   );
 
   useWebviewListener(
@@ -85,15 +86,22 @@ const Layout = () => {
     "focusContinueInputWithNewSession",
     async () => {
       navigate(ROUTES.HOME);
-      await dispatch(
-        saveCurrentSession({
-          openNewSession: true,
-          generateTitle: true,
-        }),
-      );
-      dispatch(exitEditMode());
+      if (isInEdit) {
+        await dispatch(
+          exitEdit({
+            openNewSession: true,
+          }),
+        );
+      } else {
+        await dispatch(
+          saveCurrentSession({
+            openNewSession: true,
+            generateTitle: true,
+          }),
+        );
+      }
     },
-    [location.pathname],
+    [location.pathname, isInEdit],
     location.pathname === ROUTES.HOME,
   );
 
@@ -126,31 +134,33 @@ const Layout = () => {
   );
 
   useWebviewListener(
-    "updateApplyState",
-    async (state) => {
-      // dispatch(
-      //   updateCurCheckpoint({
-      //     filepath: state.filepath,
-      //     content: state.fileContent,
-      //   }),
-      // );
-      dispatch(updateApplyState(state));
-    },
-    [],
-  );
-
-  useWebviewListener(
-    "openOnboardingCard",
-    async () => {
-      onboardingCard.open("Best");
-    },
-    [],
-  );
-
-  useWebviewListener(
     "setupLocalConfig",
     async () => {
-      onboardingCard.open("Local");
+      onboardingCard.open(OnboardingModes.LOCAL);
+    },
+    [],
+  );
+
+  useWebviewListener(
+    "freeTrialExceeded",
+    async () => {
+      dispatch(setShowDialog(true));
+      onboardingCard.setActiveTab(OnboardingModes.MODELS_ADD_ON);
+      dispatch(
+        setDialogMessage(
+          <div className="flex-1">
+            <OnboardingCard isDialog showFreeTrialExceededAlert />
+          </div>,
+        ),
+      );
+    },
+    [],
+  );
+
+  useWebviewListener(
+    "setupApiKey",
+    async () => {
+      onboardingCard.open(OnboardingModes.API_KEY);
     },
     [],
   );
@@ -158,72 +168,49 @@ const Layout = () => {
   useWebviewListener(
     "focusEdit",
     async () => {
-      await dispatch(
-        saveCurrentSession({
-          openNewSession: false,
-          // Because this causes a lag before Edit mode is focused. TODO just have that happen in background
-          generateTitle: false,
-        }),
-      );
-      dispatch(newSession());
-      dispatch(focusEdit());
-      dispatch(setMode("edit"));
+      await ideMessenger.request("edit/addCurrentSelection", undefined);
+      await dispatch(enterEdit({ editorContent: mainEditor?.getJSON() }));
+      mainEditor?.commands.focus();
     },
-    [],
+    [ideMessenger, mainEditor],
   );
 
   useWebviewListener(
-    "focusEditWithoutClear",
-    async () => {
-      await dispatch(
-        saveCurrentSession({
-          openNewSession: true,
-          generateTitle: true,
-        }),
-      );
-      dispatch(focusEdit());
-      dispatch(setMode("edit"));
-    },
-    [],
-  );
-
-  useWebviewListener(
-    "addCodeToEdit",
+    "setCodeToEdit",
     async (payload) => {
-      dispatch(addCodeToEdit(payload));
-    },
-    [navigate],
-  );
-
-  useWebviewListener(
-    "setEditStatus",
-    async ({ status, fileAfterEdit }) => {
-      dispatch(setEditStatus({ status, fileAfterEdit }));
+      dispatch(
+        setCodeToEdit({
+          codeToEdit: payload,
+        }),
+      );
     },
     [],
   );
 
-  const isInEditMode = useAppSelector(selectIsInEditMode);
-  useWebviewListener("exitEditMode", async () => {
-    if (!isInEditMode) {
-      return;
-    }
-    dispatch(
-      loadLastSession({
-        saveCurrentSession: false,
-      }),
-    );
-    dispatch(exitEditMode());
-  });
+  useWebviewListener(
+    "exitEditMode",
+    async () => {
+      await dispatch(exitEdit({}));
+    },
+    [],
+  );
+
+  useWebviewListener(
+    "generateRule",
+    async () => {
+      dispatch(setShowDialog(true));
+      dispatch(setDialogMessage(<GenerateRuleDialog />));
+    },
+    [],
+  );
 
   useEffect(() => {
     const handleKeyDown = (event: any) => {
       if (isMetaEquivalentKeyPressed(event) && event.code === "KeyC") {
         const selection = window.getSelection()?.toString();
         if (selection) {
-          // Copy to clipboard
           setTimeout(() => {
-            navigator.clipboard.writeText(selection);
+            void navigator.clipboard.writeText(selection);
           }, 100);
         }
       }
@@ -241,72 +228,46 @@ const Layout = () => {
       isNewUserOnboarding() &&
       (location.pathname === "/" || location.pathname === "/index.html")
     ) {
-      onboardingCard.open("Quickstart");
+      onboardingCard.open();
     }
   }, [location]);
 
-  const useHub = useAppSelector(selectUseHub);
-
-  // Existing users that have already seen the onboarding card
-  // should be shown an intro card for hub.continue.dev
-  // useEffect(() => {
-  //   if (useHub !== true) {
-  //     return;
-  //   }
-  //   const seenHubIntro = getLocalStorage("seenHubIntro");
-  //   if (!onboardingCard.show && !seenHubIntro) {
-  //     onboardingCard.setActiveTab("ExistingUserHubIntro");
-  //   }
-  //   setLocalStorage("seenHubIntro", true);
-  // }, [onboardingCard.show, useHub]);
-
   return (
-    <AuthProvider>
-      <LayoutTopDiv>
-        <OSRContextMenu />
-        <div
-          style={{
-            scrollbarGutter: "stable both-edges",
-            minHeight: "100%",
-            display: "grid",
-            gridTemplateRows: "1fr auto",
-          }}
-        >
-          <TextDialog
-            showDialog={showDialog}
-            onEnter={() => {
-              dispatch(setShowDialog(false));
-            }}
-            onClose={() => {
-              dispatch(setShowDialog(false));
-            }}
-            message={dialogMessage}
-          />
+    <LocalStorageProvider>
+      <AuthProvider>
+        <LayoutTopDiv>
+          <LumpProvider>
+            <OSRContextMenu />
+            <div
+              style={{
+                scrollbarGutter: "stable both-edges",
+                minHeight: "100%",
+                display: "grid",
+                gridTemplateRows: "1fr auto",
+              }}
+            >
+              <TextDialog
+                showDialog={showDialog}
+                onEnter={() => {
+                  dispatch(setShowDialog(false));
+                }}
+                onClose={() => {
+                  dispatch(setShowDialog(false));
+                }}
+                message={dialogMessage}
+              />
 
-          <GridDiv className="">
-            <PostHogPageView />
-            <Outlet />
-
-            {hasFatalErrors && pathname !== ROUTES.CONFIG_ERROR && (
-              <div
-                className="z-50 cursor-pointer bg-red-600 p-4 text-center text-white"
-                role="alert"
-                onClick={() => navigate(ROUTES.CONFIG_ERROR)}
-              >
-                <strong className="font-bold">Error!</strong>{" "}
-                <span className="block sm:inline">Could not load config</span>
-                <div className="mt-2 underline">Learn More</div>
-              </div>
-            )}
-            <Footer />
-          </GridDiv>
-        </div>
-        <div
-          style={{ fontSize: `${getFontSize() - 4}px` }}
-          id="tooltip-portal-div"
-        />
-      </LayoutTopDiv>
-    </AuthProvider>
+              <GridDiv className="">
+                <PostHogPageView />
+                <Outlet />
+                <FatalErrorIndicator />
+              </GridDiv>
+            </div>
+            <div style={{ fontSize: fontSize(-4) }} id="tooltip-portal-div" />
+          </LumpProvider>
+        </LayoutTopDiv>
+      </AuthProvider>
+    </LocalStorageProvider>
   );
 };
 

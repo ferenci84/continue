@@ -1,7 +1,13 @@
+/**
+ * I'm disabling this rule for the entire file under the assumption
+ * that this is a one-time migration script. I'm expecting this
+ * code to be removed in the future.
+ */
+/* eslint-disable max-statements */
+
 import { IDE } from "..";
 import { deduplicateArray } from "../util";
 import { GlobalContext } from "../util/GlobalContext";
-import { editConfigJson } from "../util/paths";
 import { resolveSerializedConfig } from "./load";
 import { SharedConfigSchema } from "./sharedConfig";
 
@@ -167,6 +173,13 @@ export function migrateJsonSharedConfig(filepath: string, ide: IDE): void {
         effected = true;
       }
 
+      const { autoAcceptEditToolDiffs, ...withoutAutoApply } = migratedUI;
+      if (autoAcceptEditToolDiffs !== undefined) {
+        shareConfigUpdates.autoAcceptEditToolDiffs = autoAcceptEditToolDiffs;
+        migratedUI = withoutAutoApply;
+        effected = true;
+      }
+
       const { showChatScrollbar, ...withoutShowChatScrollbar } = migratedUI;
       if (showChatScrollbar !== undefined) {
         shareConfigUpdates.showChatScrollbar = showChatScrollbar;
@@ -196,13 +209,8 @@ export function migrateJsonSharedConfig(filepath: string, ide: IDE): void {
 
     if (effected) {
       new GlobalContext().updateSharedConfig(shareConfigUpdates);
-      editConfigJson(() => config);
-      // void ide.showToast(
-      //   "warning",
-      //   "Migrated deprecated Continue JSON settings. Edit in the Settings Page",
-      // );
     }
   } catch (e) {
-    throw new Error(`Migration: Failed to parse config.json: ${e}`);
+    console.error(`Migration: Failed to parse config.json: ${e}`);
   }
 }

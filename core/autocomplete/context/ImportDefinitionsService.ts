@@ -5,6 +5,7 @@ import {
   getParserForFile,
   getQueryForFile,
 } from "../../util/treeSitter";
+import { findUriInDirs } from "../../util/uri";
 
 interface FileInfo {
   imports: { [key: string]: RangeInFileWithContents[] };
@@ -21,7 +22,13 @@ export class ImportDefinitionsService {
 
   constructor(private readonly ide: IDE) {
     ide.onDidChangeActiveTextEditor((filepath) => {
-      this.cache.initKey(filepath);
+      this.cache
+        .initKey(filepath)
+        .catch((e) =>
+          console.warn(
+            `Failed to initialize ImportDefinitionService: ${e.message}`,
+          ),
+        );
     });
   }
 
@@ -44,7 +51,15 @@ export class ImportDefinitionsService {
 
     let fileContents: string | undefined = undefined;
     try {
-      fileContents = await this.ide.readFile(filepath);
+      const { foundInDir } = findUriInDirs(
+        filepath,
+        await this.ide.getWorkspaceDirs(),
+      );
+      if (!foundInDir) {
+        return null;
+      } else {
+        fileContents = await this.ide.readFile(filepath);
+      }
     } catch (err) {
       // File removed
       return null;

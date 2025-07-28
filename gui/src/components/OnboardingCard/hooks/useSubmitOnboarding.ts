@@ -1,24 +1,27 @@
+import { OnboardingModes } from "core/protocol/core";
 import { usePostHog } from "posthog-js/react";
 import { useContext } from "react";
 import { IdeMessengerContext } from "../../../context/IdeMessenger";
 import { getLocalStorage, setLocalStorage } from "../../../util/localStorage";
-import { OnboardingModes } from "core/protocol/core";
-import { useTutorialCard } from "../../../hooks/useTutorialCard";
+import { useLump } from "../../mainInput/Lump/LumpContext";
 import { useOnboardingCard } from "./useOnboardingCard";
 
 export function useSubmitOnboarding(mode: OnboardingModes, isDialog = false) {
   const posthog = usePostHog();
   const ideMessenger = useContext(IdeMessengerContext);
-  const { openTutorialCard } = useTutorialCard();
   const { close: closeOnboardingCard } = useOnboardingCard();
+  const { setSelectedSection } = useLump();
 
-  function submitOnboarding() {
+  function submitOnboarding(provider?: string, apiKey?: string) {
     const onboardingStatus = getLocalStorage("onboardingStatus");
 
-    // Always close the onboarding card and update config.json
+    // Always close the onboarding card and update config.yaml
     closeOnboardingCard(isDialog);
-    ideMessenger.post("completeOnboarding", {
+
+    ideMessenger.post("onboarding/complete", {
       mode,
+      provider,
+      apiKey,
     });
 
     if (onboardingStatus === "Started") {
@@ -31,12 +34,12 @@ export function useSubmitOnboarding(mode: OnboardingModes, isDialog = false) {
       // Local state
       setLocalStorage("onboardingStatus", "Completed");
 
-      // Show tutorial card
-      openTutorialCard();
-
       // Move to next step in onboarding
       ideMessenger.post("showTutorial", undefined);
     }
+
+    ideMessenger.post("config/openProfile", { profileId: undefined });
+    setSelectedSection("models");
   }
 
   return {

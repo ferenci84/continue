@@ -1,3 +1,5 @@
+import * as path from "path";
+
 import { getContinueRcPath, getTsConfigPath } from "core/util/paths";
 import { Telemetry } from "core/util/posthog";
 import * as vscode from "vscode";
@@ -22,13 +24,35 @@ export async function activateExtension(context: vscode.ExtensionContext) {
 
   // Load Continue configuration
   if (!context.globalState.get("hasBeenInstalled")) {
-    context.globalState.update("hasBeenInstalled", true);
-    Telemetry.capture(
+    void context.globalState.update("hasBeenInstalled", true);
+    void Telemetry.capture(
       "install",
       {
         extensionVersion: getExtensionVersion(),
       },
       true,
+    );
+  }
+
+  // Register config.yaml schema by removing old entries and adding new one (uri.fsPath changes with each version)
+  const yamlMatcher = ".continue/**/*.yaml";
+  const yamlConfig = vscode.workspace.getConfiguration("yaml");
+
+  const newPath = path.join(
+    context.extension.extensionUri.fsPath,
+    "config-yaml-schema.json",
+  );
+
+  try {
+    await yamlConfig.update(
+      "schemas",
+      { [newPath]: [yamlMatcher] },
+      vscode.ConfigurationTarget.Global,
+    );
+  } catch (error) {
+    console.error(
+      "Failed to register Continue config.yaml schema, most likely, YAML extension is not installed",
+      error,
     );
   }
 

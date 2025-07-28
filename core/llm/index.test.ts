@@ -1,6 +1,11 @@
 import { ChatMessage, LLMOptions } from "..";
 
+import { allModelProviders } from "@continuedev/llm-info";
+import { LlmInfo } from "@continuedev/llm-info/dist/types";
 import { BaseLLM } from ".";
+import { DEFAULT_CONTEXT_LENGTH } from "./constants";
+import { LLMClasses } from "./llms";
+import { LLMLogger } from "./logger";
 
 class DummyLLM extends BaseLLM {
   static providerName = "openai";
@@ -30,11 +35,10 @@ describe("BaseLLM", () => {
       const templatMessagesFunction = (messages: ChatMessage[]) => {
         return messages[0]?.content.toString() ?? "";
       };
-      const writeLogFunction = async () => {};
+      const llmLogger = new LLMLogger();
       const options: LLMOptions = {
         model: "gpt-3.5-turbo",
         uniqueId: "testId",
-        systemMessage: "Test System Message",
         contextLength: 1024,
         completionOptions: {
           model: "some-model",
@@ -43,7 +47,7 @@ describe("BaseLLM", () => {
         requestOptions: {},
         promptTemplates: {},
         templateMessages: templatMessagesFunction,
-        writeLog: writeLogFunction,
+        logger: llmLogger,
         llmRequestHook: () => {},
         apiKey: "testApiKey",
         aiGatewaySlug: "testSlug",
@@ -61,13 +65,12 @@ describe("BaseLLM", () => {
       expect(instance.title).toBeDefined();
       expect(instance.uniqueId).toBe("testId");
       expect(instance.model).toBe("gpt-3.5-turbo");
-      expect(instance.systemMessage).toBe("Test System Message");
       expect(instance.contextLength).toBe(1024);
       expect(instance.completionOptions.maxTokens).toBe(150);
       expect(instance.requestOptions).toEqual({});
       expect(instance.promptTemplates).toEqual({});
       expect(instance.templateMessages).toEqual(templatMessagesFunction);
-      expect(instance.writeLog).toBe(writeLogFunction);
+      expect(instance.logger).toBe(llmLogger);
       expect(instance.apiKey).toBe("testApiKey");
       expect(instance.aiGatewaySlug).toBe("testSlug");
       expect(instance.apiBase).toBe("https://api.example.com/");
@@ -140,5 +143,32 @@ describe("BaseLLM", () => {
   });
   describe("*streamChat", () => {
     // TODO: Implement tests for *streamChat method
+  });
+
+  describe("default context length", () => {
+    allModelProviders.map((modelProvider) => {
+      const LLMClass = LLMClasses.find(
+        (llm) => llm.providerName === modelProvider.id,
+      );
+      if (!LLMClass) {
+        throw new Error(`did not find LLM provider for ${modelProvider.id}`);
+      }
+      const testContextLength = (llmInfo: LlmInfo) => () => {
+        const llm = new LLMClass({ model: llmInfo.model });
+        if (llmInfo.contextLength) {
+          expect(llm.contextLength).toEqual(llmInfo.contextLength);
+        } else {
+          expect(llm.contextLength).toEqual(DEFAULT_CONTEXT_LENGTH);
+        }
+      };
+      describe(`${modelProvider.id}`, () => {
+        modelProvider.models.forEach((llmInfo) => {
+          test(
+            `should have correct context length for ${llmInfo.model}`,
+            testContextLength(llmInfo),
+          );
+        });
+      });
+    });
   });
 });

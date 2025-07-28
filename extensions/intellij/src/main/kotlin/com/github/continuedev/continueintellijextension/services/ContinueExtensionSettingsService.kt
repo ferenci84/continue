@@ -1,25 +1,25 @@
 package com.github.continuedev.continueintellijextension.services
 
-import com.github.continuedev.continueintellijextension.constants.getConfigJsPath
 import com.github.continuedev.continueintellijextension.constants.getConfigJsonPath
-import com.intellij.execution.target.value.constant
+import com.github.continuedev.continueintellijextension.error.ContinueErrorService
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.components.*
+import com.intellij.openapi.components.PersistentStateComponent
+import com.intellij.openapi.components.State
+import com.intellij.openapi.components.Storage
+import com.intellij.openapi.components.service
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.project.DumbAware
-import com.intellij.openapi.util.SystemInfo
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.util.io.HttpRequests
 import com.intellij.util.messages.Topic
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.io.File
 import java.io.IOException
+import java.net.URL
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import javax.swing.*
@@ -30,7 +30,6 @@ class ContinueSettingsComponent : DumbAware {
     val remoteConfigSyncPeriod: JTextField = JTextField()
     val userToken: JTextField = JTextField()
     val enableTabAutocomplete: JCheckBox = JCheckBox("Enable Tab Autocomplete")
-    val enableContinueTeamsBeta: JCheckBox = JCheckBox("Enable Continue for Teams Beta")
     val enableOSR: JCheckBox = JCheckBox("Enable Off-Screen Rendering")
     val displayEditorTooltip: JCheckBox = JCheckBox("Display Editor Tooltip")
     val showIDECompletionSideBySide: JCheckBox = JCheckBox("Show IDE completions side-by-side")
@@ -59,8 +58,6 @@ class ContinueSettingsComponent : DumbAware {
         constraints.gridy++
         panel.add(enableTabAutocomplete, constraints)
         constraints.gridy++
-        panel.add(enableContinueTeamsBeta, constraints)
-        constraints.gridy++
         panel.add(enableOSR, constraints)
         constraints.gridy++
         panel.add(displayEditorTooltip, constraints)
@@ -75,11 +72,10 @@ class ContinueSettingsComponent : DumbAware {
     }
 }
 
-@Serializable
-class ContinueRemoteConfigSyncResponse {
-    var configJson: String? = null
-    var configJs: String? = null
-}
+data class ContinueRemoteConfigSyncResponse(
+    var configJson: String?,
+    var configJs: String?
+)
 
 @State(
     name = "com.github.continuedev.continueintellijextension.services.ContinueExtensionSettings",
@@ -94,8 +90,6 @@ open class ContinueExtensionSettings : PersistentStateComponent<ContinueExtensio
         var remoteConfigSyncPeriod: Int = 60
         var userToken: String? = null
         var enableTabAutocomplete: Boolean = true
-        var ghAuthToken: String? = null
-        var enableContinueTeamsBeta: Boolean = false
         var enableOSR: Boolean = shouldRenderOffScreen()
         var displayEditorTooltip: Boolean = true
         var showIDECompletionSideBySide: Boolean = false
@@ -116,56 +110,29 @@ open class ContinueExtensionSettings : PersistentStateComponent<ContinueExtensio
 
     companion object {
         val instance: ContinueExtensionSettings
-            get() = ServiceManager.getService(ContinueExtensionSettings::class.java)
+            get() = service<ContinueExtensionSettings>()
     }
 
 
     // Sync remote config from server
     private fun syncRemoteConfig() {
-        val state = instance.continueState
-
-        if (state.remoteConfigServerUrl != null && state.remoteConfigServerUrl!!.isNotEmpty()) {
-            // download remote config as json file
-
-            val client = OkHttpClient()
-            val baseUrl = state.remoteConfigServerUrl?.removeSuffix("/")
-
-            val requestBuilder = Request.Builder().url("${baseUrl}/sync")
-
-            if (state.userToken != null) {
-                requestBuilder.addHeader("Authorization", "Bearer ${state.userToken}")
-            }
-
-            val request = requestBuilder.build()
-            var configResponse: ContinueRemoteConfigSyncResponse? = null
-
+        val remoteServerUrl = state.remoteConfigServerUrl
+        val token = state.userToken
+        if (remoteServerUrl != null && remoteServerUrl.isNotEmpty()) {
+            val baseUrl = remoteServerUrl.removeSuffix("/")
             try {
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) throw IOException("Unexpected code $response")
-
-                    response.body?.string()?.let { responseBody ->
-                        try {
-                            configResponse =
-                                Json.decodeFromString<ContinueRemoteConfigSyncResponse>(responseBody)
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                            return
-                        }
-                    }
-                }
+                val url = "$baseUrl/sync"
+                val responseBody = HttpRequests.post(url, HttpRequests.JSON_CONTENT_TYPE)
+                    .tuner { connection ->
+                        if (token != null)
+                            connection.addRequestProperty("Authorization", "Bearer $token")
+                    }.readString()
+                val response = Json.decodeFromString<ContinueRemoteConfigSyncResponse>(responseBody)
+                val file = File(getConfigJsonPath(URL(url).host))
+                response.configJs.let { file.writeText(it!!) }
+                response.configJson.let { file.writeText(it!!) }
             } catch (e: IOException) {
-                e.printStackTrace()
-                return
-            }
-
-            if (configResponse?.configJson?.isNotEmpty()!!) {
-                val file = File(getConfigJsonPath(request.url.host))
-                file.writeText(configResponse!!.configJson!!)
-            }
-
-            if (configResponse?.configJs?.isNotEmpty()!!) {
-                val file = File(getConfigJsPath(request.url.host))
-                file.writeText(configResponse!!.configJs!!)
+                service<ContinueErrorService>().report(e, "Unexpected exception during remote config sync")
             }
         }
     }
@@ -179,7 +146,7 @@ open class ContinueExtensionSettings : PersistentStateComponent<ContinueExtensio
 
         instance.remoteSyncFuture = AppExecutorUtil.getAppScheduledExecutorService()
             .scheduleWithFixedDelay(
-                { syncRemoteConfig() },
+                ::syncRemoteConfig,
                 0,
                 continueState.remoteConfigSyncPeriod.toLong(),
                 TimeUnit.MINUTES
@@ -210,7 +177,6 @@ class ContinueExtensionConfigurable : Configurable {
                     mySettingsComponent?.remoteConfigSyncPeriod?.text?.toInt() != settings.continueState.remoteConfigSyncPeriod ||
                     mySettingsComponent?.userToken?.text != settings.continueState.userToken ||
                     mySettingsComponent?.enableTabAutocomplete?.isSelected != settings.continueState.enableTabAutocomplete ||
-                    mySettingsComponent?.enableContinueTeamsBeta?.isSelected != settings.continueState.enableContinueTeamsBeta ||
                     mySettingsComponent?.enableOSR?.isSelected != settings.continueState.enableOSR ||
                     mySettingsComponent?.displayEditorTooltip?.isSelected != settings.continueState.displayEditorTooltip ||
                     mySettingsComponent?.showIDECompletionSideBySide?.isSelected != settings.continueState.showIDECompletionSideBySide
@@ -223,8 +189,6 @@ class ContinueExtensionConfigurable : Configurable {
         settings.continueState.remoteConfigSyncPeriod = mySettingsComponent?.remoteConfigSyncPeriod?.text?.toInt() ?: 60
         settings.continueState.userToken = mySettingsComponent?.userToken?.text
         settings.continueState.enableTabAutocomplete = mySettingsComponent?.enableTabAutocomplete?.isSelected ?: false
-        settings.continueState.enableContinueTeamsBeta =
-            mySettingsComponent?.enableContinueTeamsBeta?.isSelected ?: false
         settings.continueState.enableOSR = mySettingsComponent?.enableOSR?.isSelected ?: true
         settings.continueState.displayEditorTooltip = mySettingsComponent?.displayEditorTooltip?.isSelected ?: true
         settings.continueState.showIDECompletionSideBySide =
@@ -241,7 +205,6 @@ class ContinueExtensionConfigurable : Configurable {
         mySettingsComponent?.remoteConfigSyncPeriod?.text = settings.continueState.remoteConfigSyncPeriod.toString()
         mySettingsComponent?.userToken?.text = settings.continueState.userToken
         mySettingsComponent?.enableTabAutocomplete?.isSelected = settings.continueState.enableTabAutocomplete
-        mySettingsComponent?.enableContinueTeamsBeta?.isSelected = settings.continueState.enableContinueTeamsBeta
         mySettingsComponent?.enableOSR?.isSelected = settings.continueState.enableOSR
         mySettingsComponent?.displayEditorTooltip?.isSelected = settings.continueState.displayEditorTooltip
         mySettingsComponent?.showIDECompletionSideBySide?.isSelected =

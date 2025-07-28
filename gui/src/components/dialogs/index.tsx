@@ -1,18 +1,13 @@
-import React, { isValidElement, useEffect } from "react";
+import { XMarkIcon } from "@heroicons/react/24/outline";
+import React, { isValidElement } from "react";
 import ReactMarkdown from "react-markdown";
 import styled from "styled-components";
 import {
   CloseButton,
-  VSC_BACKGROUND_VAR,
   defaultBorderRadius,
-  lightGray,
-  parseColorForHex,
   vscBackground,
   vscForeground,
 } from "..";
-import { useDispatch } from "react-redux";
-import { setShowDialog } from "../../redux/slices/uiSlice";
-import { XMarkIcon } from "@heroicons/react/24/outline";
 
 interface TextDialogProps {
   showDialog: boolean;
@@ -25,8 +20,10 @@ const ScreenCover = styled.div`
   position: fixed;
   width: 100%;
   height: 100%;
-  background-color: ${parseColorForHex(VSC_BACKGROUND_VAR)}aa;
-  z-index: 1000;
+  background-color: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(0.5px);
+  z-index: 100000;
+  flex-direction: column;
 `;
 
 const DialogContainer = styled.div`
@@ -34,59 +31,48 @@ const DialogContainer = styled.div`
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-`;
-
-const Dialog = styled.div`
   color: ${vscForeground};
   background-color: ${vscBackground};
   border-radius: ${defaultBorderRadius};
   display: flex;
   flex-direction: column;
-  border: 1px solid ${lightGray};
-  margin: auto;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
   word-wrap: break-word;
-  // overflow: hidden;
 `;
 
 const TextDialog = (props: TextDialogProps) => {
-  const dispatch = useDispatch();
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        props.onClose();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [props]);
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "Escape") {
+      props.onClose();
+    }
+  };
 
   if (!isValidElement(props.message) && typeof props.message !== "string") {
     return null;
   }
 
   return (
-    <ScreenCover onClick={props.onClose} hidden={!props.showDialog}>
+    <ScreenCover
+      onClick={props.onClose}
+      hidden={!props.showDialog}
+      onKeyDown={handleKeyDown}
+      tabIndex={-1}
+    >
       <DialogContainer
-        className="xs:w-[90%] no-scrollbar max-h-full w-[92%] max-w-[600px] overflow-auto sm:w-[88%] md:w-[80%]"
+        className="xs:w-[90%] no-scrollbar max-h-[95%] w-[92%] max-w-[600px] overflow-auto sm:w-[88%] md:w-[80%]"
         onClick={(e) => {
           e.stopPropagation();
         }}
       >
-        <Dialog>
-          <CloseButton onClick={props.onClose}>
-            <XMarkIcon className="z-50 h-5 w-5 hover:brightness-125" />
-          </CloseButton>
+        <CloseButton onClick={props.onClose}>
+          <XMarkIcon className="z-50 h-5 w-5 hover:brightness-125" />
+        </CloseButton>
 
-          {typeof props.message === "string" ? (
-            <ReactMarkdown>{props.message || ""}</ReactMarkdown>
-          ) : !React.isValidElement(props.message) ? null : (
-            props.message
-          )}
-        </Dialog>
+        {typeof props.message === "string" ? (
+          <ReactMarkdown>{props.message || ""}</ReactMarkdown>
+        ) : !React.isValidElement(props.message) ? null : (
+          props.message
+        )}
       </DialogContainer>
     </ScreenCover>
   );

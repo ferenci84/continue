@@ -2,7 +2,7 @@ import {
   BedrockRuntimeClient,
   InvokeModelWithResponseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
-import { fromIni } from "@aws-sdk/credential-providers";
+import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 
 import { CompletionOptions, LLMOptions } from "../../index.js";
 import { BaseLLM } from "../index.js";
@@ -51,9 +51,15 @@ class BedrockImport extends BaseLLM {
 
     if (response.body) {
       for await (const item of response.body) {
-        const chunk = JSON.parse(new TextDecoder().decode(item.chunk?.bytes));
-        if (chunk.outputs[0].text) {
-          yield chunk.outputs[0].text;
+        const decoder = new TextDecoder();
+        const decoded = decoder.decode(item.chunk?.bytes);
+        try {
+          const chunk = JSON.parse(decoded);
+          if (chunk.outputs[0].text) {
+            yield chunk.outputs[0].text;
+          }
+        } catch (e) {
+          throw new Error(`Malformed JSON received from Bedrock: ${decoded}`);
         }
       }
     }
@@ -77,7 +83,7 @@ class BedrockImport extends BaseLLM {
 
   private async _getCredentials() {
     try {
-      return await fromIni({
+      return await fromNodeProviderChain({
         profile: this.profile,
         ignoreCache: true,
       })();
@@ -85,7 +91,7 @@ class BedrockImport extends BaseLLM {
       console.warn(
         `AWS profile with name ${this.profile} not found in ~/.aws/credentials, using default profile`,
       );
-      return await fromIni()();
+      return await fromNodeProviderChain()();
     }
   }
 }

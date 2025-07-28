@@ -1,24 +1,17 @@
 package com.github.continuedev.continueintellijextension.actions
 
 import com.github.continuedev.continueintellijextension.editor.DiffStreamService
-import com.github.continuedev.continueintellijextension.services.ContinuePluginService
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.PlatformDataKeys
-import com.intellij.openapi.components.ServiceManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.wm.ToolWindowManager
 
-fun getPluginService(project: Project?): ContinuePluginService? {
-    if (project == null) {
-        return null
+class RestartContinueProcess : AnAction() {
+    override fun actionPerformed(e: AnActionEvent) {
+        val pluginService = getContinuePluginService(e.project) ?: return
+        pluginService.coreMessengerManager?.coreMessenger?.restart()
     }
-    return ServiceManager.getService(
-        project,
-        ContinuePluginService::class.java
-    )
 }
 
 class AcceptDiffAction : AnAction() {
@@ -29,7 +22,7 @@ class AcceptDiffAction : AnAction() {
 
     private fun acceptHorizontalDiff(e: AnActionEvent) {
         val continuePluginService = getPluginService(e.project) ?: return
-        continuePluginService?.diffManager?.acceptDiff(null)
+        continuePluginService.diffManager?.acceptDiff(null)
     }
 
     private fun acceptVerticalDiff(e: AnActionEvent) {
@@ -61,28 +54,6 @@ class RejectDiffAction : AnAction() {
     }
 }
 
-fun getContinuePluginService(project: Project?): ContinuePluginService? {
-    if (project != null) {
-        val toolWindowManager = ToolWindowManager.getInstance(project)
-        val toolWindow = toolWindowManager.getToolWindow("Continue")
-
-        if (toolWindow != null) {
-            if (!toolWindow.isVisible) {
-                toolWindow.activate(null)
-            }
-        }
-    }
-
-    return getPluginService(project)
-}
-
-fun focusContinueInput(project: Project?) {
-    val continuePluginService = getContinuePluginService(project) ?: return
-    continuePluginService.continuePluginWindow?.content?.components?.get(0)?.requestFocus()
-    continuePluginService.sendToWebview("focusContinueInputWithoutClear", null)
-
-    continuePluginService.ideProtocolClient?.sendHighlightedCode()
-}
 
 class FocusContinueInputWithoutClearAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
@@ -127,11 +98,18 @@ class OpenConfigAction : AnAction() {
     }
 }
 
-class OpenMorePageAction : AnAction() {
+class OpenLogsAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
-        val continuePluginService = getContinuePluginService(e.project) ?: return
-        continuePluginService.continuePluginWindow?.content?.components?.get(0)?.requestFocus()
-        val params = mapOf("path" to "/more", "toggle" to true)
-        continuePluginService.sendToWebview("navigateTo", params)
+        val project = e.project ?: return
+        val logFile = java.io.File(System.getProperty("user.home") + "/.continue/logs/core.log")
+        if (logFile.exists()) {
+            val virtualFile = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByIoFile(logFile)
+            if (virtualFile != null) {
+                FileEditorManager.getInstance(project).openFile(virtualFile, true)
+            }
+        }
     }
 }
+
+
+

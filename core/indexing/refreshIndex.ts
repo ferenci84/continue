@@ -18,10 +18,6 @@ import {
 
 export type DatabaseConnection = Database<sqlite3.Database>;
 
-export function tagToString(tag: IndexTag): string {
-  return `${tag.directory}::${tag.branch}::${tag.artifactId}`;
-}
-
 export class SqliteDb {
   static db: DatabaseConnection | null = null;
 
@@ -49,6 +45,16 @@ export class SqliteDb {
             artifactId STRING NOT NULL
         )`,
     );
+
+    await db.exec(
+      `CREATE TABLE IF NOT EXISTS indexing_lock (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            locked BOOLEAN NOT NULL,
+            timestamp INTEGER NOT NULL,
+            dirs STRING NOT NULL
+        )`,
+    );
+
     // Delete duplicate rows from tag_catalog
     await db.exec(`
     DELETE FROM tag_catalog
@@ -157,32 +163,67 @@ async function getAddRemoveForTag(
   const remove: PathAndCacheKey[] = [];
   const updateLastUpdated: PathAndCacheKey[] = [];
 
-  for (const item of saved) {
-    const { lastUpdated, ...pathAndCacheKey } = item;
+  // First, group items by path and find latest timestamp for each
+  const pathGroups = new Map<
+    string,
+    {
+      latest: { lastUpdated: number; cacheKey: string };
+      allVersions: Array<{ cacheKey: string }>;
+    }
+  >();
 
-    if (files[item.path] === undefined) {
-      // Was indexed, but no longer exists. Remove
-      remove.push(pathAndCacheKey);
+  for (const item of saved) {
+    const { lastUpdated, path, cacheKey } = item;
+
+    if (!pathGroups.has(path)) {
+      pathGroups.set(path, {
+        latest: { lastUpdated, cacheKey },
+        allVersions: [{ cacheKey }],
+      });
+    } else {
+      const group = pathGroups.get(path)!;
+      group.allVersions.push({ cacheKey });
+      if (lastUpdated > group.latest.lastUpdated) {
+        group.latest = { lastUpdated, cacheKey };
+      }
+    }
+  }
+
+  // Now process each unique path
+  for (const [path, group] of pathGroups) {
+    if (files[path] === undefined) {
+      // Was indexed, but no longer exists. Remove all versions
+      for (const version of group.allVersions) {
+        remove.push({ path, cacheKey: version.cacheKey });
+      }
     } else {
       // Exists in old and new, so determine whether it was updated
-      if (lastUpdated < files[item.path].lastModified) {
+      if (group.latest.lastUpdated < files[path].lastModified) {
         // Change was made after last update
-        const newHash = calculateHash(await readFile(pathAndCacheKey.path));
-        if (pathAndCacheKey.cacheKey !== newHash) {
+        const newHash = calculateHash(await readFile(path));
+        if (group.latest.cacheKey !== newHash) {
           updateNewVersion.push({
-            path: pathAndCacheKey.path,
+            path,
             cacheKey: newHash,
           });
-          updateOldVersion.push(pathAndCacheKey);
+          for (const version of group.allVersions) {
+            updateOldVersion.push({ path, cacheKey: version.cacheKey });
+          }
         } else {
-          updateLastUpdated.push(pathAndCacheKey);
+          // File contents did not change
+          updateLastUpdated.push({ path, cacheKey: group.latest.cacheKey });
+          for (const version of group.allVersions) {
+            if (version.cacheKey !== group.latest.cacheKey) {
+              updateOldVersion.push({ path, cacheKey: version.cacheKey });
+            }
+          }
         }
       } else {
         // Already updated, do nothing
       }
 
-      // Remove so we can check leftovers afterward
-      delete files[item.path];
+      // Remove path, so that only newly created paths remain
+      delete files[path];
     }
   }
 
@@ -498,6 +539,50 @@ export function truncateToLastNBytes(input: string, maxBytes: number): string {
   return input.substring(startIndex, input.length);
 }
 
-export function truncateSqliteLikePattern(input: string) {
-  return truncateToLastNBytes(input, SQLITE_MAX_LIKE_PATTERN_LENGTH);
+export function truncateSqliteLikePattern(input: string, safety: number = 100) {
+  return truncateToLastNBytes(input, SQLITE_MAX_LIKE_PATTERN_LENGTH - safety);
+}
+
+export class IndexLock {
+  private static getLockTableName() {
+    return "indexing_lock";
+  }
+
+  static async isLocked(): Promise<
+    { locked: boolean; dirs: string; timestamp: number } | undefined | undefined
+  > {
+    const db = await SqliteDb.get();
+    const row = (await db.get(
+      `SELECT locked, dirs, timestamp FROM ${IndexLock.getLockTableName()} WHERE locked = ?`,
+      true,
+    )) as { locked: boolean; dirs: string; timestamp: number } | undefined;
+    return row;
+  }
+
+  static async lock(dirs: string) {
+    const db = await SqliteDb.get();
+    await db.run(
+      `INSERT INTO ${IndexLock.getLockTableName()} (locked, timestamp, dirs) VALUES (?, ?, ?)`,
+      true,
+      Date.now(),
+      dirs,
+    );
+  }
+
+  static async updateTimestamp() {
+    const db = await SqliteDb.get();
+    await db.run(
+      `UPDATE ${IndexLock.getLockTableName()} SET timestamp = ? where locked = ?`,
+      Date.now(),
+      true,
+    );
+  }
+
+  static async unlock() {
+    const db = await SqliteDb.get();
+    await db.run(
+      `DELETE FROM ${IndexLock.getLockTableName()} WHERE locked = ?`,
+      true,
+    );
+  }
 }

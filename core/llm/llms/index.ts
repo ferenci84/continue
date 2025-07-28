@@ -1,13 +1,14 @@
+import Handlebars from "handlebars";
 import {
   BaseCompletionOptions,
   IdeSettings,
   ILLM,
+  ILLMLogger,
+  JSONModelDescription,
   LLMOptions,
-  ModelDescription,
 } from "../..";
-import { renderTemplatedString } from "../../promptFiles/v1/renderTemplatedString";
+import { renderTemplatedString } from "../../util/handlebars/renderTemplatedString";
 import { BaseLLM } from "../index";
-
 import Anthropic from "./Anthropic";
 import Asksage from "./Asksage";
 import Azure from "./Azure";
@@ -18,17 +19,20 @@ import Cloudflare from "./Cloudflare";
 import Cohere from "./Cohere";
 import DeepInfra from "./DeepInfra";
 import Deepseek from "./Deepseek";
+import Docker from "./Docker";
 import Fireworks from "./Fireworks";
 import Flowise from "./Flowise";
-import FreeTrial from "./FreeTrial";
 import FunctionNetwork from "./FunctionNetwork";
 import Gemini from "./Gemini";
 import Groq from "./Groq";
 import HuggingFaceInferenceAPI from "./HuggingFaceInferenceAPI";
+import HuggingFaceTEIEmbeddingsProvider from "./HuggingFaceTEI";
 import HuggingFaceTGI from "./HuggingFaceTGI";
+import Inception from "./Inception";
 import Kindo from "./Kindo";
 import LlamaCpp from "./LlamaCpp";
 import Llamafile from "./Llamafile";
+import LlamaStack from "./LlamaStack";
 import LMStudio from "./LMStudio";
 import Mistral from "./Mistral";
 import MockLLM from "./Mock";
@@ -41,6 +45,8 @@ import Nvidia from "./Nvidia";
 import Ollama from "./Ollama";
 import OpenAI from "./OpenAI";
 import OpenRouter from "./OpenRouter";
+import OVHcloud from "./OVHcloud";
+import { Relace } from "./Relace";
 import Replicate from "./Replicate";
 import SageMaker from "./SageMaker";
 import SambaNova from "./SambaNova";
@@ -50,15 +56,15 @@ import ContinueProxy from "./stubs/ContinueProxy";
 import TestLLM from "./Test";
 import TextGenWebUI from "./TextGenWebUI";
 import Together from "./Together";
+import Venice from "./Venice";
 import VertexAI from "./VertexAI";
 import Vllm from "./Vllm";
+import Voyage from "./Voyage";
 import WatsonX from "./WatsonX";
 import xAI from "./xAI";
-
 export const LLMClasses = [
   Anthropic,
   Cohere,
-  FreeTrial,
   FunctionNetwork,
   Gemini,
   Llamafile,
@@ -69,10 +75,12 @@ export const LLMClasses = [
   Together,
   Novita,
   HuggingFaceTGI,
+  HuggingFaceTEIEmbeddingsProvider,
   HuggingFaceInferenceAPI,
   Kindo,
   LlamaCpp,
   OpenAI,
+  OVHcloud,
   LMStudio,
   Mistral,
   Bedrock,
@@ -86,6 +94,7 @@ export const LLMClasses = [
   ContinueProxy,
   Cloudflare,
   Deepseek,
+  Docker,
   Msty,
   Azure,
   WatsonX,
@@ -98,20 +107,25 @@ export const LLMClasses = [
   Cerebras,
   Asksage,
   Nebius,
+  Venice,
   VertexAI,
   xAI,
   SiliconFlow,
   Scaleway,
+  Relace,
+  Inception,
+  Voyage,
+  LlamaStack,
 ];
 
 export async function llmFromDescription(
-  desc: ModelDescription,
+  desc: JSONModelDescription,
   readFile: (filepath: string) => Promise<string>,
+  getUriFromPath: (path: string) => Promise<string | undefined>,
   uniqueId: string,
   ideSettings: IdeSettings,
-  writeLog: (log: string) => Promise<void>,
+  llmLogger: ILLMLogger,
   completionOptions?: BaseCompletionOptions,
-  systemMessage?: string
 ): Promise<BaseLLM | undefined> {
   const cls = LLMClasses.find((llm) => llm.providerName === desc.provider);
 
@@ -124,9 +138,18 @@ export async function llmFromDescription(
     ...desc.completionOptions,
   };
 
-  systemMessage = desc.systemMessage ?? systemMessage;
-  if (systemMessage !== undefined) {
-    systemMessage = await renderTemplatedString(systemMessage, readFile, {});
+  let baseChatSystemMessage: string | undefined = undefined;
+  if (desc.systemMessage !== undefined) {
+    // baseChatSystemMessage = DEFAULT_CHAT_SYSTEM_MESSAGE;
+    // baseChatSystemMessage += "\n\n";
+    baseChatSystemMessage = await renderTemplatedString(
+      Handlebars,
+      desc.systemMessage,
+      {},
+      [],
+      readFile,
+      getUriFromPath,
+    );
   }
 
   let options: LLMOptions = {
@@ -143,8 +166,10 @@ export async function llmFromDescription(
         cls.defaultOptions?.completionOptions?.autoCompleteMaxTokens ??
         256
     },
-    systemMessage,
-    writeLog,
+    baseChatSystemMessage,
+    basePlanSystemMessage: baseChatSystemMessage,
+    baseAgentSystemMessage: baseChatSystemMessage,
+    logger: llmLogger,
     uniqueId,
   };
 

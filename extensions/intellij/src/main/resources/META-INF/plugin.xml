@@ -7,6 +7,7 @@
         <![CDATA[View the latest release notes on <a href="https://github.com/continuedev/continue/releases">GitHub</a>]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.plugins.terminal</depends>
 
     <!-- See here for why this is optional:  https://github.com/continuedev/continue/issues/2775#issuecomment-2535620877-->
     <depends optional="true" config-file="continueintellijextension-withJSON.xml">
@@ -19,7 +20,7 @@
     <extensions defaultExtensionNs="com.intellij">
         <editorFactoryListener
                 implementation="com.github.continuedev.continueintellijextension.autocomplete.AutocompleteEditorListener"/>
-        <toolWindow id="Continue" anchor="right" icon="/tool-window-icon.svg"
+        <toolWindow id="Continue" anchor="right" icon="com.github.continuedev.continueintellijextension.Icons.Continue"
                     factoryClass="com.github.continuedev.continueintellijextension.toolWindow.ContinuePluginToolWindowFactory"/>
         <projectService id="ContinuePluginService"
                         serviceImplementation="com.github.continuedev.continueintellijextension.services.ContinuePluginService"/>
@@ -36,13 +37,10 @@
                            displayType="BALLOON"/>
         <actionPromoter order="last"
                         implementation="com.github.continuedev.continueintellijextension.actions.ContinueActionPromote"/>
-    </extensions>
-
-    <resource-bundle>messages.MyBundle</resource-bundle>
-
-    <extensions defaultExtensionNs="com.intellij">
+        <errorHandler implementation="com.github.continuedev.continueintellijextension.error.ContinueErrorSubmitter"/>
         <postStartupActivity
                 implementation="com.github.continuedev.continueintellijextension.activities.ContinuePluginStartupActivity"/>
+        <postStartupActivity implementation="com.github.continuedev.continueintellijextension.proxy.ProxyPoolingActivity"/>
         <applicationConfigurable
                 parentId="tools"
                 instance="com.github.continuedev.continueintellijextension.services.ContinueExtensionConfigurable"
@@ -74,13 +72,20 @@
             <override-text place="GoToAction" text="Continue: Accept Diff"/>
         </action>
 
+        <action id="continue.restartProcess"
+                class="com.github.continuedev.continueintellijextension.actions.RestartContinueProcess"
+                text="Restart Process"
+                description="Restart Process">
+            <override-text place="GoToAction" text="Continue: Restart Process"/>
+        </action>
+
         <action id="continue.rejectDiff"
                 class="com.github.continuedev.continueintellijextension.actions.RejectDiffAction"
                 text="Reject Diff" description="Reject Diff">
             <keyboard-shortcut keymap="$default"
-                               first-keystroke="shift ctrl DELETE"/>
+                               first-keystroke="shift ctrl BACK_SPACE"/>
             <keyboard-shortcut keymap="Mac OS X"
-                               first-keystroke="shift meta DELETE"/>
+                               first-keystroke="shift meta BACK_SPACE"/>
             <override-text place="GoToAction" text="Continue: Reject Diff"/>
         </action>
 
@@ -140,19 +145,18 @@
             <override-text place="GoToAction" text="Continue Config"/>
         </action>
 
-        <action id="continue.openMorePage"
-                class="com.github.continuedev.continueintellijextension.actions.OpenMorePageAction"
-                icon="AllIcons.Actions.MoreHorizontal"
-                text="More"
-                description="More">
-            <override-text place="GoToAction" text="More"/>
+        <action id="continue.openLogs"
+                class="com.github.continuedev.continueintellijextension.actions.OpenLogsAction"
+                icon="AllIcons.General.ShowInfos"
+                text="Open Logs"
+                description="Open Continue Logs">
+            <override-text place="GoToAction" text="Open Continue Logs"/>
         </action>
 
         <group id="ContinueSidebarActionsGroup">
             <reference ref="continue.newContinueSession"/>
             <reference ref="continue.viewHistory"/>
             <reference ref="continue.openConfigPage"/>
-            <reference ref="continue.openMorePage"/>
         </group>
 
         <action id="continue.focusContinueInput"
@@ -170,6 +174,13 @@
         <action id="com.github.continuedev.continueintellijextension.autocomplete.AcceptAutocompleteAction"
                 class="com.github.continuedev.continueintellijextension.autocomplete.AcceptAutocompleteAction"
                 text="Accept Autocomplete Suggestion" description="Accept Autocomplete Suggestion">
+            <keyboard-shortcut keymap="$default" first-keystroke="TAB"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="TAB"/>
+        </action>
+
+        <action id="com.github.continuedev.continueintellijextension.nextEdit.AcceptNextEditAction"
+                class="com.github.continuedev.continueintellijextension.nextEdit.AcceptNextEditAction"
+                text="Accept Autocomplete Suggestion" description="Accept Next Edit Prediction">
             <keyboard-shortcut keymap="$default" first-keystroke="TAB"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="TAB"/>
         </action>

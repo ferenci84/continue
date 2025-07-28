@@ -4,7 +4,11 @@ import { Session, SessionMetadata } from "../index.js";
 import { ListHistoryOptions } from "../protocol/core.js";
 
 import { NEW_SESSION_TITLE } from "./constants.js";
-import { getSessionFilePath, getSessionsListPath } from "./paths.js";
+import {
+  getSessionFilePath,
+  getSessionsFolderPath,
+  getSessionsListPath,
+} from "./paths.js";
 function safeParseArray<T>(
   value: string,
   errorMessage: string = "Error parsing array",
@@ -17,7 +21,7 @@ function safeParseArray<T>(
   }
 }
 
-class HistoryManager {
+export class HistoryManager {
   list(options: ListHistoryOptions): SessionMetadata[] {
     const filepath = getSessionsListPath();
     if (!fs.existsSync(filepath)) {
@@ -65,6 +69,10 @@ class HistoryManager {
       sessionsListFile,
       JSON.stringify(sessionsList, undefined, 2),
     );
+  }
+
+  clearAll() {
+    fs.rmSync(getSessionsFolderPath(), { recursive: true, force: true });
   }
 
   load(sessionId: string): Session {

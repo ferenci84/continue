@@ -34,7 +34,7 @@ export async function getContextProvidersString(
             provider.description.displayTitle === selectedProvider.label,
         );
 
-        if (!provider) {
+        if (!provider || !config.selectedModelByRole.chat) {
           return [];
         }
 
@@ -43,11 +43,12 @@ export async function getContextProvidersString(
           ide,
           embeddingsProvider: config.selectedModelByRole.embed,
           reranker: config.selectedModelByRole.rerank,
-          llm: config.models[0],
+          llm: config.selectedModelByRole.chat,
           fullInput: "",
           selectedCode: [],
           fetch: (url, init) =>
             fetchwithRequestOptions(url, init, config.requestOptions),
+          isInAgentMode: false,
         });
       }) || [],
     )

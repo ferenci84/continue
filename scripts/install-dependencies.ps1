@@ -25,6 +25,31 @@ if ($null -eq $node) {
     & node --version
 }
 
+# Node.js version check
+if (Test-Path ".nvmrc") {
+    $requiredNodeVersion = Get-Content ".nvmrc"
+    $currentNodeVersion = node -v
+
+    # Remove 'v' prefix from versions for comparison
+    $requiredVersion = $requiredNodeVersion.TrimStart('v')
+    $currentVersion = $currentNodeVersion.TrimStart('v')
+
+    if ($requiredVersion -ne $currentVersion) {
+        Write-Host "`n⚠️  Warning: Your Node.js version ($currentNodeVersion) does not match the required version ($requiredNodeVersion)" -ForegroundColor Yellow
+        Write-Host "Please consider switching to the correct version using: nvm use" -ForegroundColor Yellow
+        
+        # Check if running in interactive mode
+        if ([Environment]::UserInteractive -and [Environment]::GetCommandLineArgs().Count -eq 0) {
+            Write-Host "Press Enter to continue with installation anyway..." -NoNewline -ForegroundColor Yellow
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            Write-Host "`n" # Add newline after key press
+        } else {
+            Write-Host "Continuing with installation anyway...`n" -ForegroundColor Yellow
+        }
+    }
+}
+
+
 # if ($null -eq $cargo) {
 #     Write-Host "`n...`n"
 #     Write-Host "Cargo`n" -ForegroundColor  White
@@ -50,6 +75,42 @@ if (($null -eq $node)) {
 
 Write-Host "`nInstalling root-level dependencies..." -ForegroundColor White
 npm install
+
+Write-Host "`nBuilding config-types..." -ForegroundColor White
+Push-Location packages/config-types
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding fetch..." -ForegroundColor White
+Push-Location packages/fetch
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding llm-info..." -ForegroundColor White
+Push-Location packages/llm-info
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding config-yaml..." -ForegroundColor White
+Push-Location packages/config-yaml
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding openai-adapters..." -ForegroundColor White
+Push-Location packages/openai-adapters
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding hub..." -ForegroundColor White
+Push-Location packages/hub
+npm install
+npm run build
+Pop-Location
 
 Write-Host "`nInstalling Core extension dependencies..." -ForegroundColor White
 Push-Location core
@@ -89,3 +150,5 @@ Write-Output "`nInstalling docs dependencies..." -ForegroundColor White
 Push-Location docs
 
 npm install
+
+Pop-Location

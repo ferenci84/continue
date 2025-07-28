@@ -2,10 +2,12 @@ import { JSONContent } from "@tiptap/react";
 import { OnboardingStatus } from "../components/OnboardingCard";
 
 type LocalStorageTypes = {
+  isExploreDialogOpen: boolean;
+  hasDismissedExploreDialog: boolean;
   onboardingStatus?: OnboardingStatus;
   hasDismissedOnboardingCard: boolean;
-  mainTextEntryCounter: number;
   ide: "vscode" | "jetbrains";
+  vsCodeUriScheme: string;
   ftc: number;
   fontSize: number;
   [key: `inputHistory_${string}`]: JSONContent[];
@@ -13,9 +15,14 @@ type LocalStorageTypes = {
   showTutorialCard: boolean;
   shownProfilesIntroduction: boolean;
   disableIndexing: boolean;
-  /** Indicates whether the user has seen any kind of onboarding card since hub.continue.dev */
-  seenHubIntro: boolean;
+  hasExitedFreeTrial: boolean;
 };
+
+export enum LocalStorageKey {
+  IsExploreDialogOpen = "isExploreDialogOpen",
+  HasDismissedExploreDialog = "hasDismissedExploreDialog",
+  HasExitedFreeTrial = "hasExitedFreeTrial",
+}
 
 export function getLocalStorage<T extends keyof LocalStorageTypes>(
   key: T,
