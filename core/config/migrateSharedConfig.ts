@@ -173,6 +173,13 @@ export function migrateJsonSharedConfig(filepath: string, ide: IDE): void {
         effected = true;
       }
 
+      const { autoAcceptEditToolDiffs, ...withoutAutoApply } = migratedUI;
+      if (autoAcceptEditToolDiffs !== undefined) {
+        shareConfigUpdates.autoAcceptEditToolDiffs = autoAcceptEditToolDiffs;
+        migratedUI = withoutAutoApply;
+        effected = true;
+      }
+
       const { showChatScrollbar, ...withoutShowChatScrollbar } = migratedUI;
       if (showChatScrollbar !== undefined) {
         shareConfigUpdates.showChatScrollbar = showChatScrollbar;
@@ -204,6 +211,6 @@ export function migrateJsonSharedConfig(filepath: string, ide: IDE): void {
       new GlobalContext().updateSharedConfig(shareConfigUpdates);
     }
   } catch (e) {
-    throw new Error(`Migration: Failed to parse config.json: ${e}`);
+    console.error(`Migration: Failed to parse config.json: ${e}`);
   }
 }

@@ -7,7 +7,7 @@ import {
   getQueryForFile,
 } from "../util/treeSitter";
 
-import { DatabaseConnection, SqliteDb, tagToString } from "./refreshIndex";
+import { DatabaseConnection, SqliteDb } from "./refreshIndex";
 import {
   IndexResultType,
   MarkCompleteCallback,
@@ -29,12 +29,14 @@ import {
   getLastNUriRelativePathParts,
   getUriPathBasename,
 } from "../util/uri";
+import { tagToString } from "./utils";
 
 type SnippetChunk = ChunkWithoutID & { title: string; signature: string };
 
 export class CodeSnippetsCodebaseIndex implements CodebaseIndex {
   relativeExpectedTime: number = 1;
-  artifactId = "codeSnippets";
+  static artifactId = "codeSnippets";
+  artifactId: string = CodeSnippetsCodebaseIndex.artifactId;
 
   constructor(private readonly ide: IDE) {}
 
@@ -57,7 +59,7 @@ export class CodeSnippetsCodebaseIndex implements CodebaseIndex {
       FOREIGN KEY (snippetId) REFERENCES code_snippets (id)
     )`);
 
-    migrate("add_signature_column", async () => {
+    await migrate("add_signature_column", async () => {
       const tableInfo = await db.all("PRAGMA table_info(code_snippets)");
       const signatureColumnExists = tableInfo.some(
         (column) => column.name === "signature",
@@ -71,7 +73,7 @@ export class CodeSnippetsCodebaseIndex implements CodebaseIndex {
       }
     });
 
-    migrate("delete_duplicate_code_snippets", async () => {
+    await migrate("delete_duplicate_code_snippets", async () => {
       // Delete duplicate entries in code_snippets
       await db.exec(`
         DELETE FROM code_snippets
@@ -219,7 +221,6 @@ export class CodeSnippetsCodebaseIndex implements CodebaseIndex {
     // Compute
     for (let i = 0; i < results.compute.length; i++) {
       const compute = results.compute[i];
-
       let snippets: SnippetChunk[] = [];
       try {
         snippets = await this.getSnippetsInFile(
@@ -256,7 +257,7 @@ export class CodeSnippetsCodebaseIndex implements CodebaseIndex {
         progress: i / results.compute.length,
         status: "indexing",
       };
-      markComplete([compute], IndexResultType.Compute);
+      await markComplete([compute], IndexResultType.Compute);
     }
 
     // Delete
@@ -278,7 +279,7 @@ export class CodeSnippetsCodebaseIndex implements CodebaseIndex {
         );
       }
 
-      markComplete([del], IndexResultType.Delete);
+      await markComplete([del], IndexResultType.Delete);
     }
 
     // Add tag
@@ -313,7 +314,7 @@ export class CodeSnippetsCodebaseIndex implements CodebaseIndex {
         );
       }
 
-      markComplete([results.addTag[i]], IndexResultType.AddTag);
+      await markComplete([results.addTag[i]], IndexResultType.AddTag);
     }
 
     // Remove tag
@@ -343,7 +344,7 @@ export class CodeSnippetsCodebaseIndex implements CodebaseIndex {
         );
       }
 
-      markComplete([results.removeTag[i]], IndexResultType.RemoveTag);
+      await markComplete([results.removeTag[i]], IndexResultType.RemoveTag);
     }
   }
 

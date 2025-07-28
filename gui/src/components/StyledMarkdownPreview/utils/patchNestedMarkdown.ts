@@ -1,47 +1,64 @@
 /*
     This is a patch for outputing markdown code that contains codeblocks
 
-    It notices markdown blocks, keeps track of when that specific block is closed,
+    It notices markdown blocks (including GitHub-specific variants),
+    keeps track of when that specific block is closed,
     and uses ~~~ instead of ``` for that block
 
     Note, this was benchmarked at sub-millisecond
-
-      // TODO support github-specific markdown as well, edge case
 */
+import {
+  headerIsMarkdown,
+  MarkdownBlockStateTracker,
+} from "../../../../../core/utils/markdownUtils";
+
 export const patchNestedMarkdown = (source: string): string => {
-  if (!source.match(/```(\w+\.(md|markdown))/)) return source; // For performance
-  // const start = Date.now();
+  // Early return if no markdown codeblock pattern is found (including GitHub variants)
+  if (!source.match(/```(\w*|.*)(md|markdown|gfm|github-markdown)/))
+    return source;
+
   let nestCount = 0;
   const lines = source.split("\n");
-  const trimmedLines = lines.map((l) => l.trim());
+
+  // Use optimized state tracker for efficient bare backtick analysis
+  const stateTracker = new MarkdownBlockStateTracker(lines);
+  const trimmedLines = stateTracker.getTrimmedLines();
+
   for (let i = 0; i < trimmedLines.length; i++) {
     const line = trimmedLines[i];
-    if (nestCount) {
-      if (line.match(/^`+$/)) {
-        // Ending a block
-        if (nestCount === 1) lines[i] = "~~~"; // End of markdown block
-        nestCount--;
+
+    if (nestCount > 0) {
+      // Inside a markdown block
+      if (stateTracker.isBareBacktickLine(i)) {
+        // Found bare backticks - use optimized lookup for remaining count
+        const remainingBareBackticks =
+          stateTracker.getRemainingBareBackticksAfter(i);
+
+        // If this is the last bare backticks, it closes the markdown block
+        if (remainingBareBackticks === 0) {
+          nestCount = 0;
+          lines[i] = "~~~"; // Convert final closing delimiter to tildes
+        }
+        // Otherwise, keep as backticks (inner nested block delimiter)
       } else if (line.startsWith("```")) {
-        // Going into a nested codeblock
+        // Going into a nested codeblock (with language identifier)
         nestCount++;
       }
     } else {
-      // Enter the markdown block, start tracking nesting
+      // Not inside a markdown block yet
       if (line.startsWith("```")) {
         const header = line.replaceAll("`", "");
-        const file = header.split(" ")[0];
 
-        if (file) {
-          const ext = file.split(".").at(-1);
-          if (ext === "md" || ext === "markdown") {
-            nestCount = 1;
-            lines[i] = lines[i].replaceAll("`", "~"); // Replace backticks with tildes
-          }
+        // Check if this is a markdown codeblock using a consolidated approach (including GitHub-specific variants)
+        const isMarkdown = headerIsMarkdown(header);
+
+        if (isMarkdown) {
+          nestCount = 1;
+          lines[i] = lines[i].replaceAll("`", "~");
         }
       }
     }
   }
-  const out = lines.join("\n");
-  // console.log(`patched in ${Date.now() - start}ms`);
-  return out;
+
+  return lines.join("\n");
 };

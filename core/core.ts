@@ -3,25 +3,28 @@ import * as URI from "uri-js";
 import { v4 as uuidv4 } from "uuid";
 
 import { CompletionProvider } from "./autocomplete/CompletionProvider";
+import {
+  openedFilesLruCache,
+  prevFilepaths,
+} from "./autocomplete/util/openedFilesLruCache";
 import { ConfigHandler } from "./config/ConfigHandler";
 import { SYSTEM_PROMPT_DOT_FILE } from "./config/getWorkspaceContinueRuleDotFiles";
 import { addModel, deleteModel } from "./config/util";
-import CodebaseContextProvider from "./context/providers/CodebaseContextProvider";
 import CurrentFileContextProvider from "./context/providers/CurrentFileContextProvider";
-import { recentlyEditedFilesCache } from "./context/retrieval/recentlyEditedFilesCache";
-import { ContinueServerClient } from "./continueServer/stubs/client";
 import { getAuthUrlForTokenPage } from "./control-plane/auth/index";
 import { getControlPlaneEnv } from "./control-plane/env";
 import { DevDataSqliteDb } from "./data/devdataSqlite";
 import { DataLogger } from "./data/log";
-import { CodebaseIndexer, PauseToken } from "./indexing/CodebaseIndexer";
+import { CodebaseIndexer } from "./indexing/CodebaseIndexer";
 import DocsService from "./indexing/docs/DocsService";
 import { countTokens } from "./llm/countTokens";
 import Ollama from "./llm/llms/Ollama";
-import { createNewPromptFileV2 } from "./promptFiles/v2/createNewPromptFile";
+import { EditAggregator } from "./nextEdit/context/aggregateEdits";
+import { createNewPromptFileV2 } from "./promptFiles/createNewPromptFile";
 import { callTool } from "./tools/callTool";
 import { ChatDescriber } from "./util/chatDescriber";
 import { clipboardCache } from "./util/clipboardCache";
+import { compactConversation } from "./util/conversationCompaction";
 import { GlobalContext } from "./util/GlobalContext";
 import historyManager from "./util/history";
 import { editConfigFile, migrateV1DevDataFiles } from "./util/paths";
@@ -34,86 +37,77 @@ import { getSymbolsForManyFiles } from "./util/treeSitter";
 import { TTS } from "./util/tts";
 
 import {
+  CompleteOnboardingPayload,
+  ContextItemId,
   ContextItemWithId,
-  DiffLine,
   IdeSettings,
   ModelDescription,
+  Position,
   RangeInFile,
+  ToolCall,
   type ContextItem,
-  type ContextItemId,
   type IDE,
-  type IndexingProgressUpdate,
 } from ".";
 
-import { ConfigYaml } from "@continuedev/config-yaml";
-import { isLocalAssistantFile } from "./config/loadLocalAssistants";
+import { BLOCK_TYPES, ConfigYaml } from "@continuedev/config-yaml";
+import { getDiffFn, GitDiffCache } from "./autocomplete/snippets/gitDiffCache";
+import { stringifyMcpPrompt } from "./commands/slash/mcpSlashCommand";
+import { isLocalDefinitionFile } from "./config/loadLocalAssistants";
+import { CodebaseRulesCache } from "./config/markdown/loadCodebaseRules";
 import {
-  setupBestConfig,
   setupLocalConfig,
+  setupProviderConfig,
   setupQuickstartConfig,
 } from "./config/onboarding";
 import { createNewWorkspaceBlockFile } from "./config/workspace/workspaceBlocks";
-import { MCPManagerSingleton } from "./context/mcp";
+import { MCPManagerSingleton } from "./context/mcp/MCPManagerSingleton";
+import { setMdmLicenseKey } from "./control-plane/mdm/mdm";
+import { ApplyAbortManager } from "./edit/applyAbortManager";
 import { streamDiffLines } from "./edit/streamDiffLines";
 import { shouldIgnore } from "./indexing/shouldIgnore";
 import { walkDirCache } from "./indexing/walkDir";
 import { LLMLogger } from "./llm/logger";
+import { RULES_MARKDOWN_FILENAME } from "./llm/rules/constants";
 import { llmStreamChat } from "./llm/streamChat";
+import { BeforeAfterDiff } from "./nextEdit/context/diffFormatting";
+import { processSmallEdit } from "./nextEdit/context/processSmallEdit";
+import { NextEditProvider } from "./nextEdit/NextEditProvider";
 import type { FromCoreProtocol, ToCoreProtocol } from "./protocol";
+import { OnboardingModes } from "./protocol/core";
 import type { IMessenger, Message } from "./protocol/messenger";
+import { getUriPathBasename } from "./util/uri";
 
-async function* streamDiffLinesGenerator(
-  configHandler: ConfigHandler,
-  abortedMessageIds: Set<string>,
-  msg: Message<ToCoreProtocol["streamDiffLines"][0]>,
-): AsyncGenerator<DiffLine> {
-  const data = msg.data;
-
-  const { config } = await configHandler.loadConfig();
-  if (!config) {
-    throw new Error("Failed to load config");
-  }
-
-  const llm = config.selectedModelByRole.chat;
-
-  if (!llm) {
-    throw new Error("No chat model selected");
-  }
-
-  for await (const diffLine of streamDiffLines({
-    highlighted: data.highlighted,
-    prefix: data.prefix,
-    suffix: data.suffix,
-    llm,
-    rules: config.rules,
-    input: data.input,
-    language: data.language,
-    onlyOneInsertion: false,
-    overridePrompt: undefined,
-  })) {
-    if (abortedMessageIds.has(msg.messageId)) {
-      abortedMessageIds.delete(msg.messageId);
-      break;
+const hasRulesFiles = (uris: string[]): boolean => {
+  for (const uri of uris) {
+    const filename = getUriPathBasename(uri);
+    if (filename === RULES_MARKDOWN_FILENAME) {
+      return true;
     }
-    yield diffLine;
   }
-}
+  return false;
+};
 
 export class Core {
   configHandler: ConfigHandler;
-  codebaseIndexerPromise: Promise<CodebaseIndexer>;
+  codeBaseIndexer: CodebaseIndexer;
   completionProvider: CompletionProvider;
-  continueServerClientPromise: Promise<ContinueServerClient>;
-  codebaseIndexingState: IndexingProgressUpdate;
+  nextEditProvider: NextEditProvider;
   private docsService: DocsService;
   private globalContext = new GlobalContext();
   llmLogger = new LLMLogger();
 
-  private readonly indexingPauseToken = new PauseToken(
-    this.globalContext.get("indexingPaused") === true,
-  );
-
-  private abortedMessageIds: Set<string> = new Set();
+  private messageAbortControllers = new Map<string, AbortController>();
+  private addMessageAbortController(id: string): AbortController {
+    const controller = new AbortController();
+    this.messageAbortControllers.set(id, controller);
+    controller.signal.addEventListener("abort", () => {
+      this.messageAbortControllers.delete(id);
+    });
+    return controller;
+  }
+  private abortById(messageId: string) {
+    this.messageAbortControllers.get(messageId)?.abort();
+  }
 
   invoke<T extends keyof ToCoreProtocol>(
     messageType: T,
@@ -139,12 +133,6 @@ export class Core {
     // Ensure .continue directory is created
     migrateV1DevDataFiles();
 
-    this.codebaseIndexingState = {
-      status: "loading",
-      desc: "loading",
-      progress: 0,
-    };
-
     const ideInfoPromise = messenger.request("getIdeInfo", undefined);
     const ideSettingsPromise = messenger.request("getIdeSettings", undefined);
     const sessionInfoPromise = messenger.request("getControlPlaneSessionInfo", {
@@ -165,28 +153,49 @@ export class Core {
       this.messenger,
     );
 
-    MCPManagerSingleton.getInstance().onConnectionsRefreshed = async () => {
-      await this.configHandler.reloadConfig();
-    };
+    MCPManagerSingleton.getInstance().onConnectionsRefreshed = () => {
+      void this.configHandler.reloadConfig("MCP Connections refreshed");
 
-    this.configHandler.onConfigUpdate(async (result) => {
-      const serializedResult = await this.configHandler.getSerializedConfig();
-      this.messenger.send("configUpdate", {
-        result: serializedResult,
-        profileId:
-          this.configHandler.currentProfile?.profileDescription.id || null,
-        organizations: this.configHandler.getSerializedOrgs(),
-        selectedOrgId: this.configHandler.currentOrg.id,
-      });
+      // Refresh @mention dropdown submenu items for MCP providers
+      const mcpManager = MCPManagerSingleton.getInstance();
+      const mcpProviderNames = Array.from(mcpManager.connections.keys()).map(
+        (mcpId) => `mcp-${mcpId}`,
+      );
 
-      // update additional submenu context providers registered via VSCode API
-      const additionalProviders =
-        this.configHandler.getAdditionalSubmenuContextProviders();
-      if (additionalProviders.length > 0) {
+      if (mcpProviderNames.length > 0) {
         this.messenger.send("refreshSubmenuItems", {
-          providers: additionalProviders,
+          providers: mcpProviderNames,
         });
       }
+    };
+
+    this.codeBaseIndexer = new CodebaseIndexer(
+      this.configHandler,
+      this.ide,
+      this.messenger,
+      this.globalContext.get("indexingPaused"),
+    );
+
+    this.configHandler.onConfigUpdate((result) => {
+      void (async () => {
+        const serializedResult = await this.configHandler.getSerializedConfig();
+        this.messenger.send("configUpdate", {
+          result: serializedResult,
+          profileId:
+            this.configHandler.currentProfile?.profileDescription.id || null,
+          organizations: this.configHandler.getSerializedOrgs(),
+          selectedOrgId: this.configHandler.currentOrg.id,
+        });
+
+        // update additional submenu context providers registered via VSCode API
+        const additionalProviders =
+          this.configHandler.getAdditionalSubmenuContextProviders();
+        if (additionalProviders.length > 0) {
+          this.messenger.send("refreshSubmenuItems", {
+            providers: additionalProviders,
+          });
+        }
+      })();
     });
 
     // Dev Data Logger
@@ -195,38 +204,12 @@ export class Core {
     dataLogger.ideInfoPromise = ideInfoPromise;
     dataLogger.ideSettingsPromise = ideSettingsPromise;
 
-    // Codebase Indexer and ContinueServerClient depend on IdeSettings
-    let codebaseIndexerResolve: (_: any) => void | undefined;
-    this.codebaseIndexerPromise = new Promise(
-      async (resolve) => (codebaseIndexerResolve = resolve),
-    );
-
-    let continueServerClientResolve: (_: any) => void | undefined;
-    this.continueServerClientPromise = new Promise(
-      (resolve) => (continueServerClientResolve = resolve),
-    );
-
     void ideSettingsPromise.then((ideSettings) => {
-      const continueServerClient = new ContinueServerClient(
-        ideSettings.remoteConfigServerUrl,
-        ideSettings.userToken,
-      );
-      continueServerClientResolve(continueServerClient);
-
-      codebaseIndexerResolve(
-        new CodebaseIndexer(
-          this.configHandler,
-          this.ide,
-          this.indexingPauseToken,
-          continueServerClient,
-        ),
-      );
-
       // Index on initialization
       void this.ide.getWorkspaceDirs().then(async (dirs) => {
         // Respect pauseCodebaseIndexOnStart user settings
         if (ideSettings.pauseCodebaseIndexOnStart) {
-          this.indexingPauseToken.paused = true;
+          this.codeBaseIndexer.paused = true;
           void this.messenger.request("indexProgress", {
             progress: 0,
             desc: "Initial Indexing Skipped",
@@ -235,7 +218,7 @@ export class Core {
           return;
         }
 
-        void this.refreshCodebaseIndex(dirs);
+        void this.codeBaseIndexer.refreshCodebaseIndex(dirs);
       });
     });
 
@@ -252,6 +235,24 @@ export class Core {
       getLlm,
       (e) => {},
       (..._) => Promise.resolve([]),
+    );
+
+    const codebaseRulesCache = CodebaseRulesCache.getInstance();
+    void codebaseRulesCache
+      .refresh(ide)
+      .catch((e) => console.error("Failed to initialize colocated rules cache"))
+      .then(() => {
+        void this.configHandler.reloadConfig(
+          "Initial codebase rules post-walkdir/load reload",
+        );
+      });
+    this.nextEditProvider = NextEditProvider.initialize(
+      this.configHandler,
+      ide,
+      getLlm,
+      (e) => {},
+      (..._) => Promise.resolve([]),
+      "fineTuned",
     );
 
     this.registerMessageHandlers(ideSettingsPromise);
@@ -282,7 +283,7 @@ export class Core {
     });
 
     on("abort", (msg) => {
-      this.abortedMessageIds.add(msg.messageId);
+      this.abortById(msg.data ?? msg.messageId);
     });
 
     on("ping", (msg) => {
@@ -320,36 +321,51 @@ export class Core {
     on("config/addModel", (msg) => {
       const model = msg.data.model;
       addModel(model, msg.data.role);
-      void this.configHandler.reloadConfig();
+      void this.configHandler.reloadConfig(
+        "Model added (config/addModel message)",
+      );
     });
 
     on("config/deleteModel", (msg) => {
       deleteModel(msg.data.title);
-      void this.configHandler.reloadConfig();
+      void this.configHandler.reloadConfig(
+        "Model removed (config/deleteModel message)",
+      );
     });
 
     on("config/newPromptFile", async (msg) => {
       const { config } = await this.configHandler.loadConfig();
       await createNewPromptFileV2(this.ide, config?.experimental?.promptPath);
-      await this.configHandler.reloadConfig();
+      await this.configHandler.reloadConfig(
+        "Prompt file created (config/newPromptFile message)",
+      );
     });
 
     on("config/addLocalWorkspaceBlock", async (msg) => {
       await createNewWorkspaceBlockFile(this.ide, msg.data.blockType);
-      await this.configHandler.reloadConfig();
+      await this.configHandler.reloadConfig(
+        "Local block created (config/addLocalWorkspaceBlock message)",
+      );
     });
 
     on("config/openProfile", async (msg) => {
-      await this.configHandler.openConfigProfile(msg.data.profileId);
+      await this.configHandler.openConfigProfile(
+        msg.data.profileId,
+        msg.data?.element,
+      );
     });
 
     on("config/reload", async (msg) => {
-      void this.configHandler.reloadConfig();
-      return await this.configHandler.getSerializedConfig();
+      // User force reloading will retrigger colocated rules
+      const codebaseRulesCache = CodebaseRulesCache.getInstance();
+      await codebaseRulesCache.refresh(this.ide);
+      void this.configHandler.reloadConfig(
+        "Force reloaded (config/reload message)",
+      );
     });
 
-    on("config/ideSettingsUpdate", (msg) => {
-      this.configHandler.updateIdeSettings(msg.data);
+    on("config/ideSettingsUpdate", async (msg) => {
+      await this.configHandler.updateIdeSettings(msg.data);
     });
 
     on("config/refreshProfiles", async (msg) => {
@@ -364,7 +380,9 @@ export class Core {
 
     on("config/updateSharedConfig", async (msg) => {
       const newSharedConfig = this.globalContext.updateSharedConfig(msg.data);
-      await this.configHandler.reloadConfig();
+      await this.configHandler.reloadConfig(
+        "Shared config update (config/updateSharedConfig message)",
+      );
       return newSharedConfig;
     });
 
@@ -374,7 +392,9 @@ export class Core {
         msg.data.role,
         msg.data.title,
       );
-      await this.configHandler.reloadConfig();
+      await this.configHandler.reloadConfig(
+        "Selected model update (config/updateSelectedModel message)",
+      );
       return newSelectedModels;
     });
 
@@ -387,8 +407,31 @@ export class Core {
       await this.messenger.request("openUrl", url);
     });
 
+    on("controlPlane/getFreeTrialStatus", async (msg) => {
+      return this.configHandler.controlPlaneClient.getFreeTrialStatus();
+    });
+
+    on("controlPlane/getModelsAddOnUpgradeUrl", async (msg) => {
+      return this.configHandler.controlPlaneClient.getModelsAddOnCheckoutUrl(
+        msg.data.vsCodeUriScheme,
+      );
+    });
+
     on("mcp/reloadServer", async (msg) => {
-      MCPManagerSingleton.getInstance().refreshConnection(msg.data.id);
+      await MCPManagerSingleton.getInstance().refreshConnection(msg.data.id);
+    });
+    on("mcp/getPrompt", async (msg) => {
+      const { serverName, promptName, args } = msg.data;
+      const prompt = await MCPManagerSingleton.getInstance().getPrompt(
+        serverName,
+        promptName,
+        args,
+      );
+      const stringifiedPrompt = stringifyMcpPrompt(prompt);
+      return {
+        prompt: stringifiedPrompt,
+        description: prompt.description,
+      };
     });
     // Context providers
     on("context/addDocs", async (msg) => {
@@ -408,15 +451,21 @@ export class Core {
       if (!config) {
         return [];
       }
-      const items = await config.contextProviders
-        ?.find((provider) => provider.description.title === msg.data.title)
-        ?.loadSubmenuItems({
-          config,
-          ide: this.ide,
-          fetch: (url, init) =>
-            fetchwithRequestOptions(url, init, config.requestOptions),
-        });
-      return items || [];
+
+      try {
+        const items = await config.contextProviders
+          ?.find((provider) => provider.description.title === msg.data.title)
+          ?.loadSubmenuItems({
+            config,
+            ide: this.ide,
+            fetch: (url, init) =>
+              fetchwithRequestOptions(url, init, config.requestOptions),
+          });
+        return items || [];
+      } catch (e) {
+        console.error(e);
+        return [];
+      }
     });
 
     on("context/getContextItems", this.getContextItems.bind(this));
@@ -445,17 +494,36 @@ export class Core {
       }
     });
 
-    on("llm/streamChat", (msg) =>
-      llmStreamChat(
+    on("llm/streamChat", (msg) => {
+      const abortController = this.addMessageAbortController(msg.messageId);
+      return llmStreamChat(
         this.configHandler,
-        this.abortedMessageIds,
+        abortController,
         msg,
         this.ide,
         this.messenger,
-      ),
-    );
+      );
+    });
 
     on("llm/complete", async (msg) => {
+      const { config } = await this.configHandler.loadConfig();
+      const model = config?.selectedModelByRole.chat;
+      if (!model) {
+        throw new Error("No chat model selected");
+      }
+      const abortController = this.addMessageAbortController(msg.messageId);
+
+      const completion = await model.complete(
+        msg.data.prompt,
+        abortController.signal,
+        msg.data.completionOptions,
+      );
+      return completion;
+    });
+    on("llm/listModels", this.handleListModels.bind(this));
+
+    on("llm/compileChat", async (msg) => {
+      const { messages, options } = msg.data;
       const model = (await this.configHandler.loadConfig()).config
         ?.selectedModelByRole.chat;
 
@@ -463,14 +531,8 @@ export class Core {
         throw new Error("No chat model selected");
       }
 
-      const completion = await model.complete(
-        msg.data.prompt,
-        new AbortController().signal,
-        msg.data.completionOptions,
-      );
-      return completion;
+      return model.compileChatMessages(messages, options);
     });
-    on("llm/listModels", this.handleListModels.bind(this));
 
     // Provide messenger to utils so they can interact with GUI + state
     TTS.messenger = this.messenger;
@@ -491,6 +553,28 @@ export class Core {
       return await ChatDescriber.describe(currentModel, {}, msg.data.text);
     });
 
+    on("conversation/compact", async (msg) => {
+      const currentModel = (await this.configHandler.loadConfig()).config
+        ?.selectedModelByRole.chat;
+
+      if (!currentModel) {
+        throw new Error("No chat model selected");
+      }
+
+      try {
+        await compactConversation({
+          sessionId: msg.data.sessionId,
+          index: msg.data.index,
+          historyManager,
+          currentModel,
+        });
+        return undefined;
+      } catch (error) {
+        console.error("Error compacting conversation:", error);
+        return undefined;
+      }
+    });
+
     // Autocomplete
     on("autocomplete/complete", async (msg) => {
       const outcome =
@@ -507,11 +591,68 @@ export class Core {
       this.completionProvider.cancel();
     });
 
-    on("streamDiffLines", (msg) =>
-      streamDiffLinesGenerator(this.configHandler, this.abortedMessageIds, msg),
-    );
+    // Next Edit
+    on("nextEdit/predict", async (msg) => {
+      const outcome = await this.nextEditProvider.provideInlineCompletionItems(
+        msg.data,
+        undefined,
+      );
+      return outcome ? [outcome.completion, outcome.originalEditableRange] : [];
+    });
+    on("nextEdit/accept", async (msg) => {
+      this.nextEditProvider.accept(msg.data.completionId);
+    });
+    on("nextEdit/reject", async (msg) => {
+      this.nextEditProvider.reject(msg.data.completionId);
+    });
 
-    on("completeOnboarding", this.handleCompleteOnboarding.bind(this));
+    on("streamDiffLines", async (msg) => {
+      const { config } = await this.configHandler.loadConfig();
+      if (!config) {
+        throw new Error("Failed to load config");
+      }
+
+      const { data } = msg;
+
+      // Title can be an edit, chat, or apply model
+      // Fall back to chat
+      const llm =
+        config.modelsByRole.edit.find((m) => m.title === data.modelTitle) ??
+        config.modelsByRole.apply.find((m) => m.title === data.modelTitle) ??
+        config.modelsByRole.chat.find((m) => m.title === data.modelTitle) ??
+        config.selectedModelByRole.chat;
+
+      if (!llm) {
+        throw new Error("No model selected");
+      }
+
+      const abortManager = ApplyAbortManager.getInstance();
+      const abortController = abortManager.get(
+        data.fileUri ?? "current-file-stream",
+      ); // not super important since currently cancelling apply will cancel all streams it's one file at a time
+
+      return streamDiffLines({
+        highlighted: data.highlighted,
+        prefix: data.prefix,
+        suffix: data.suffix,
+        llm,
+        // rules included for edit, NOT apply
+        rulesToInclude: data.includeRulesInSystemMessage
+          ? config.rules
+          : undefined,
+        input: data.input,
+        language: data.language,
+        overridePrompt: undefined,
+        abortController,
+      });
+    });
+
+    on("cancelApply", async (msg) => {
+      const abortManager = ApplyAbortManager.getInstance();
+      abortManager.clear(); // for now abort all streams
+    });
+
+    on("onboarding/complete", this.handleCompleteOnboarding.bind(this));
 
     on("addAutocompleteModel", this.handleAddAutocompleteModel.bind(this));
 
@@ -531,25 +672,24 @@ export class Core {
       }
       walkDirCache.invalidate();
       if (data?.shouldClearIndexes) {
-        const codebaseIndexer = await this.codebaseIndexerPromise;
-        await codebaseIndexer.clearIndexes();
+        await this.codeBaseIndexer.clearIndexes();
       }
 
       const dirs = data?.dirs ?? (await this.ide.getWorkspaceDirs());
-      await this.refreshCodebaseIndex(dirs);
+      await this.codeBaseIndexer.refreshCodebaseIndex(dirs);
     });
     on("index/setPaused", (msg) => {
       this.globalContext.update("indexingPaused", msg.data);
-      this.indexingPauseToken.paused = msg.data;
+      // Update using the new setter instead of token
+      this.codeBaseIndexer.paused = msg.data;
     });
     on("index/indexingProgressBarInitialized", async (msg) => {
       // Triggered when progress bar is initialized.
       // If a non-default state has been stored, update the indexing display to that state
-      if (this.codebaseIndexingState.status !== "loading") {
-        void this.messenger.request(
-          "indexProgress",
-          this.codebaseIndexingState,
-        );
+      const currentState = this.codeBaseIndexer.currentIndexingState;
+
+      if (currentState.status !== "loading") {
+        void this.messenger.request("indexProgress", currentState);
       }
     });
 
@@ -569,7 +709,7 @@ export class Core {
         });
         const { config } = await this.configHandler.loadConfig();
         if (config && !config.disableIndexing) {
-          await this.refreshCodebaseIndexFiles(toRefresh);
+          await this.codeBaseIndexer.refreshCodebaseIndexFiles(toRefresh);
         }
       }
     };
@@ -579,10 +719,17 @@ export class Core {
         walkDirCache.invalidate();
         void refreshIfNotIgnored(data.uris);
 
+        if (hasRulesFiles(data.uris)) {
+          const rulesCache = CodebaseRulesCache.getInstance();
+          await Promise.all(
+            data.uris.map((uri) => rulesCache.update(this.ide, uri)),
+          );
+          await this.configHandler.reloadConfig("Rules file created");
+        }
         // If it's a local assistant being created, we want to reload all assistants so it shows up in the list
         let localAssistantCreated = false;
         for (const uri of data.uris) {
-          if (isLocalAssistantFile(uri)) {
+          if (isLocalDefinitionFile(uri)) {
             localAssistantCreated = true;
           }
         }
@@ -596,10 +743,42 @@ export class Core {
       if (data?.uris?.length) {
         walkDirCache.invalidate();
         void refreshIfNotIgnored(data.uris);
+
+        if (hasRulesFiles(data.uris)) {
+          const rulesCache = CodebaseRulesCache.getInstance();
+          data.uris.forEach((uri) => rulesCache.remove(uri));
+          await this.configHandler.reloadConfig("Codebase rule file deleted");
+        }
       }
     });
 
     on("files/closed", async ({ data }) => {
+      try {
+        const fileUris = await this.ide.getOpenFiles();
+        if (fileUris) {
+          const filepaths = fileUris.map((uri) => uri.toString());
+
+          if (!prevFilepaths.filepaths.length) {
+            prevFilepaths.filepaths = filepaths;
+          }
+
+          // If there is a removal, including if the number of tabs is the same (which can happen with temp tabs)
+          if (filepaths.length <= prevFilepaths.filepaths.length) {
+            // Remove files from cache that are no longer open (i.e. in the cache but not in the list of opened tabs)
+            for (const [key, _] of openedFilesLruCache.entriesDescending()) {
+              if (!filepaths.includes(key)) {
+                openedFilesLruCache.delete(key);
+              }
+            }
+          }
+          prevFilepaths.filepaths = filepaths;
+        }
+      } catch (e) {
+        console.error(
+          `didChangeVisibleTextEditors: failed to update openedFilesLruCache`,
+        );
+      }
+
       if (data.uris) {
         this.messenger.send("didCloseFiles", {
           uris: data.uris,
@@ -607,7 +786,72 @@ export class Core {
       }
     });
 
-    on("files/opened", async () => {});
+    on("files/opened", async ({ data: { uris } }) => {
+      if (uris) {
+        for (const filepath of uris) {
+          try {
+            const ignore = await shouldIgnore(filepath, this.ide);
+            if (!ignore) {
+              // Set the active file as most recently used (need to force recency update by deleting and re-adding)
+              if (openedFilesLruCache.has(filepath)) {
+                openedFilesLruCache.delete(filepath);
+              }
+              openedFilesLruCache.set(filepath, filepath);
+            }
+          } catch (e) {
+            console.error(
+              `files/opened: failed to update openedFiles cache for ${filepath}`,
+            );
+          }
+        }
+      }
+    });
+
+    on("files/smallEdit", async ({ data }) => {
+      const EDIT_AGGREGATION_OPTIONS = {
+        deltaT: 1.0,
+        deltaL: 5,
+        maxEdits: 500,
+        maxDuration: 120.0,
+        contextSize: 5,
+      };
+
+      EditAggregator.getInstance(
+        EDIT_AGGREGATION_OPTIONS,
+        (
+          beforeAfterdiff: BeforeAfterDiff,
+          cursorPosBeforeEdit: Position,
+          cursorPosAfterPrevEdit: Position,
+        ) => {
+          void processSmallEdit(
+            beforeAfterdiff,
+            cursorPosBeforeEdit,
+            cursorPosAfterPrevEdit,
+            data.configHandler,
+            data.getDefsFromLspFunction,
+            this.ide,
+          );
+        },
+      );
+
+      const workspaceDir =
+        data.actions.length > 0 ? data.actions[0].workspaceDir : undefined;
+
+      // Store the latest context data
+      const instance = EditAggregator.getInstance();
+      (instance as any).latestContextData = {
+        configHandler: data.configHandler,
+        getDefsFromLspFunction: data.getDefsFromLspFunction,
+        recentlyEditedRanges: data.recentlyEditedRanges,
+        recentlyVisitedRanges: data.recentlyVisitedRanges,
+        workspaceDir: workspaceDir,
+      };
+
+      // queueMicrotask prevents blocking the UI thread during typing
+      queueMicrotask(() => {
+        void EditAggregator.getInstance().processEdits(data.actions);
+      });
+    });
 
     // Docs, etc. indexing
     on("indexing/reindex", async (msg) => {
@@ -663,72 +907,11 @@ export class Core {
       return { url };
     });
 
-    on("didChangeActiveTextEditor", async ({ data: { filepath } }) => {
-      try {
-        const ignore = shouldIgnore(filepath, this.ide);
-        if (!ignore) {
-          recentlyEditedFilesCache.set(filepath, filepath);
-        }
-      } catch (e) {
-        console.error(
-          `didChangeActiveTextEditor: failed to update recentlyEditedFiles cache for ${filepath}`,
-        );
-      }
-    });
-
-    on(
-      "tools/call",
-      async ({ data: { toolCall, selectedModelTitle }, messageId }) => {
-        const { config } = await this.configHandler.loadConfig();
-        if (!config) {
-          throw new Error("Config not loaded");
-        }
-
-        const tool = config.tools.find(
-          (t) => t.function.name === toolCall.function.name,
-        );
-
-        if (!tool) {
-          throw new Error(`Tool ${toolCall.function.name} not found`);
-        }
-
-        if (!config.selectedModelByRole.chat) {
-          throw new Error("No chat model selected");
-        }
-
-        // Define a callback for streaming output updates
-        const onPartialOutput = (params: {
-          toolCallId: string;
-          contextItems: ContextItem[];
-        }) => {
-          this.messenger.send("toolCallPartialOutput", params);
-        };
-
-        const contextItems = await callTool(
-          tool,
-          JSON.parse(toolCall.function.arguments || "{}"),
-          {
-            ide: this.ide,
-            llm: config.selectedModelByRole.chat,
-            fetch: (url, init) =>
-              fetchwithRequestOptions(url, init, config.requestOptions),
-            tool,
-            toolCallId: toolCall.id,
-            onPartialOutput,
-          },
-        );
-
-        if (tool.faviconUrl) {
-          contextItems.forEach((item) => {
-            item.icon = tool.faviconUrl;
-          });
-        }
-
-        return { contextItems };
-      },
+    on("tools/call", async ({ data: { toolCall } }) =>
+      this.handleToolCall(toolCall),
     );
 
-    on("isItemTooBig", async ({ data: { item, selectedModelTitle } }) => {
+    on("isItemTooBig", async ({ data: { item } }) => {
       return this.isItemTooBig(item);
     });
 
@@ -744,23 +927,66 @@ export class Core {
         return isBackgrounded; // Return true to indicate the message was handled successfully
       },
     );
+
+    on("mdm/setLicenseKey", ({ data: { licenseKey } }) => {
+      const isValid = setMdmLicenseKey(licenseKey);
+      return isValid;
+    });
+  }
+
+  private async handleToolCall(toolCall: ToolCall) {
+    const { config } = await this.configHandler.loadConfig();
+    if (!config) {
+      throw new Error("Config not loaded");
+    }
+
+    const tool = config.tools.find(
+      (t) => t.function.name === toolCall.function.name,
+    );
+
+    if (!tool) {
+      throw new Error(`Tool ${toolCall.function.name} not found`);
+    }
+
+    if (!config.selectedModelByRole.chat) {
+      throw new Error("No chat model selected");
+    }
+
+    // Define a callback for streaming output updates
+    const onPartialOutput = (params: {
+      toolCallId: string;
+      contextItems: ContextItem[];
+    }) => {
+      this.messenger.send("toolCallPartialOutput", params);
+    };
+
+    const result = await callTool(tool, toolCall, {
+      config,
+      ide: this.ide,
+      llm: config.selectedModelByRole.chat,
+      fetch: (url, init) =>
+        fetchwithRequestOptions(url, init, config.requestOptions),
+      tool,
+      toolCallId: toolCall.id,
+      onPartialOutput,
+      codeBaseIndexer: this.codeBaseIndexer,
+    });
+
+    return result;
   }
 
   private async isItemTooBig(item: ContextItemWithId) {
     const { config } = await this.configHandler.loadConfig();
-
     if (!config) {
       return false;
     }
 
-    const llm = (await this.configHandler.loadConfig()).config
-      ?.selectedModelByRole.chat;
-
+    const llm = config?.selectedModelByRole.chat;
     if (!llm) {
       throw new Error("No chat model selected");
     }
 
-    const tokens = countTokens(item.content);
+    const tokens = countTokens(item.content, llm.model);
 
     if (tokens > llm.contextLength - llm.completionOptions!.maxTokens!) {
       return true;
@@ -797,15 +1023,17 @@ export class Core {
         ],
       }),
     );
-    void this.configHandler.reloadConfig();
+    void this.configHandler.reloadConfig("Autocomplete model added");
   }
 
   private async handleFilesChanged({
     data,
   }: Message<{
     uris?: string[];
-  }>) {
+  }>): Promise<void> {
     if (data?.uris?.length) {
+      const diffCache = GitDiffCache.getInstance(getDiffFn(this.ide));
+      diffCache.invalidate();
       walkDirCache.invalidate(); // safe approach for now - TODO - only invalidate on relevant changes
       for (const uri of data.uris) {
         const currentProfileUri =
@@ -825,16 +1053,34 @@ export class Core {
               this.globalContext.update("showConfigUpdateToast", false);
             }
           }
-          await this.configHandler.reloadConfig();
+          await this.configHandler.reloadConfig(
+            "Current profile config file updated",
+          );
           continue;
         }
 
         if (
           uri.endsWith(".continuerc.json") ||
           uri.endsWith(".prompt") ||
-          uri.endsWith(SYSTEM_PROMPT_DOT_FILE)
+          uri.endsWith(SYSTEM_PROMPT_DOT_FILE) ||
+          (uri.includes(".continue") &&
+            (uri.endsWith(".yaml") || uri.endsWith("yml"))) ||
+          BLOCK_TYPES.some((blockType) =>
+            uri.includes(`.continue/${blockType}`),
+          )
         ) {
-          await this.configHandler.reloadConfig();
+          await this.configHandler.reloadConfig(
+            "Config-related file updated: continuerc, prompt, local block, etc",
+          );
+        } else if (uri.endsWith(RULES_MARKDOWN_FILENAME)) {
+          try {
+            const codebaseRulesCache = CodebaseRulesCache.getInstance();
+            void codebaseRulesCache.update(this.ide, uri).then(() => {
+              void this.configHandler.reloadConfig("Codebase rule update");
+            });
+          } catch (e) {
+            console.error("Failed to update codebase rule", e);
+          }
         } else if (
           uri.endsWith(".continueignore") ||
           uri.endsWith(".gitignore")
@@ -849,7 +1095,7 @@ export class Core {
             // Reindex the file
             const ignore = await shouldIgnore(uri, this.ide);
             if (!ignore) {
-              await this.refreshCodebaseIndexFiles([uri]);
+              await this.codeBaseIndexer.refreshCodebaseIndexFiles([uri]);
             }
           }
         }
@@ -888,26 +1134,25 @@ export class Core {
     }
   }
 
-  private async handleCompleteOnboarding(msg: Message<{ mode: string }>) {
-    const mode = msg.data.mode;
-
-    if (mode === "Custom") {
-      return;
-    }
+  private async handleCompleteOnboarding(
+    msg: Message<CompleteOnboardingPayload>,
+  ) {
+    const { mode, provider, apiKey } = msg.data;
 
     let editConfigYamlCallback: (config: ConfigYaml) => ConfigYaml;
 
     switch (mode) {
-      case "Local":
+      case OnboardingModes.LOCAL:
         editConfigYamlCallback = setupLocalConfig;
         break;
 
-      case "Quickstart":
-        editConfigYamlCallback = setupQuickstartConfig;
-        break;
-
-      case "Best":
-        editConfigYamlCallback = setupBestConfig;
+      case OnboardingModes.API_KEY:
+        if (provider && apiKey) {
+          editConfigYamlCallback = (config: ConfigYaml) =>
+            setupProviderConfig(config, provider, apiKey);
+        } else {
+          editConfigYamlCallback = setupQuickstartConfig;
+        }
         break;
 
       default:
@@ -917,7 +1162,7 @@ export class Core {
 
     editConfigFile((c) => c, editConfigYamlCallback);
 
-    void this.configHandler.reloadConfig();
+    void this.configHandler.reloadConfig("Onboarding completed");
   }
 
   private getContextItems = async (
@@ -926,7 +1171,7 @@ export class Core {
       query: string;
       fullInput: string;
       selectedCode: RangeInFile[];
-      selectedModelTitle: string;
+      isInAgentMode: boolean;
     }>,
   ) => {
     const { config } = await this.configHandler.loadConfig();
@@ -951,18 +1196,15 @@ export class Core {
         // user doesn't need these in their config.json for the shortcuts to work
         // option+enter
         new CurrentFileContextProvider({}),
-        // cmd+enter
-        new CodebaseContextProvider({}),
       ].find((provider) => provider.description.title === name);
     if (!provider) {
       return [];
     }
 
     try {
-      const id: ContextItemId = {
-        providerTitle: provider.description.title,
-        itemId: uuidv4(),
-      };
+      void Telemetry.capture("context_provider_get_context_items", {
+        name: provider.description.title,
+      });
 
       const items = await provider.getContextItems(query, {
         config,
@@ -974,6 +1216,7 @@ export class Core {
         reranker: config.selectedModelByRole.rerank,
         fetch: (url, init) =>
           fetchwithRequestOptions(url, init, config.requestOptions),
+        isInAgentMode: msg.data.isInAgentMode,
       });
 
       void Telemetry.capture(
@@ -984,10 +1227,14 @@ export class Core {
         true,
       );
 
-      return items.map((item) => ({
-        ...item,
-        id,
-      }));
+      return items.map((item) => {
+        const id: ContextItemId = {
+          providerTitle: provider.description.title,
+          itemId: uuidv4(),
+        };
+
+        return { ...item, id };
+      });
     } catch (e) {
       let knownError = false;
 
@@ -1021,88 +1268,4 @@ export class Core {
       return [];
     }
   };
-
-  private indexingCancellationController: AbortController | undefined;
-  private async sendIndexingErrorTelemetry(update: IndexingProgressUpdate) {
-    console.debug(
-      "Indexing failed with error: ",
-      update.desc,
-      update.debugInfo,
-    );
-    void Telemetry.capture(
-      "indexing_error",
-      {
-        error: update.desc,
-        stack: update.debugInfo,
-      },
-      false,
-    );
-  }
-
-  private async refreshCodebaseIndex(paths: string[]) {
-    if (this.indexingCancellationController) {
-      this.indexingCancellationController.abort();
-    }
-    this.indexingCancellationController = new AbortController();
-    for await (const update of (await this.codebaseIndexerPromise).refreshDirs(
-      paths,
-      this.indexingCancellationController.signal,
-    )) {
-      let updateToSend = { ...update };
-      // TODO reconsider this status overwrite?
-      // original goal was to not concern users with edge noncritical errors
-      if (update.status === "failed") {
-        updateToSend.status = "done";
-        updateToSend.desc = "Indexing complete";
-        updateToSend.progress = 1.0;
-      }
-
-      void this.messenger.request("indexProgress", updateToSend);
-      this.codebaseIndexingState = updateToSend;
-
-      if (update.status === "failed") {
-        void this.sendIndexingErrorTelemetry(update);
-      }
-    }
-
-    this.messenger.send("refreshSubmenuItems", {
-      providers: "dependsOnIndexing",
-    });
-    this.indexingCancellationController = undefined;
-  }
-
-  private async refreshCodebaseIndexFiles(files: string[]) {
-    // Can be cancelled by codebase index but not vice versa
-    if (
-      this.indexingCancellationController &&
-      !this.indexingCancellationController.signal.aborted
-    ) {
-      return;
-    }
-    this.indexingCancellationController = new AbortController();
-    for await (const update of (await this.codebaseIndexerPromise).refreshFiles(
-      files,
-    )) {
-      let updateToSend = { ...update };
-      if (update.status === "failed") {
-        updateToSend.status = "done";
-        updateToSend.desc = "Indexing complete";
-        updateToSend.progress = 1.0;
-      }
-
-      void this.messenger.request("indexProgress", updateToSend);
-      this.codebaseIndexingState = updateToSend;
-
-      if (update.status === "failed") {
-        void this.sendIndexingErrorTelemetry(update);
-      }
-    }
-
-    this.messenger.send("refreshSubmenuItems", {
-      providers: "dependsOnIndexing",
-    });
-    this.indexingCancellationController = undefined;
-  }
-
-  // private
 }

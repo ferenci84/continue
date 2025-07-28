@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as URI from "uri-js";
 import * as YAML from "yaml";
 
 import { ConfigYaml, DevEventName } from "@continuedev/config-yaml";
@@ -13,8 +14,16 @@ import Types from "../config/types";
 
 dotenv.config();
 
-const CONTINUE_GLOBAL_DIR =
-  process.env.CONTINUE_GLOBAL_DIR ?? path.join(os.homedir(), ".continue");
+const CONTINUE_GLOBAL_DIR = (() => {
+  const configPath = process.env.CONTINUE_GLOBAL_DIR;
+  if (configPath) {
+    // Convert relative path to absolute paths based on current working directory
+    return path.isAbsolute(configPath)
+      ? configPath
+      : path.resolve(process.cwd(), configPath);
+  }
+  return path.join(os.homedir(), ".continue");
+})();
 
 // export const DEFAULT_CONFIG_TS_CONTENTS = `import { Config } from "./types"\n\nexport function modifyConfig(config: Config): Config {
 //   return config;
@@ -376,12 +385,16 @@ export function getPromptLogsPath(): string {
   return path.join(getLogsDirPath(), "prompt.log");
 }
 
+export function getGlobalFolderWithName(name: string): string {
+  return path.join(getContinueGlobalPath(), name);
+}
+
 export function getGlobalPromptsPath(): string {
-  return path.join(getContinueGlobalPath(), "prompts");
+  return getGlobalFolderWithName("prompts");
 }
 
 export function getGlobalAssistantsPath(): string {
-  return path.join(getContinueGlobalPath(), "assistants");
+  return getGlobalFolderWithName("assistants");
 }
 
 export function readAllGlobalPromptFiles(
@@ -454,3 +467,38 @@ export function getDiffsDirectoryPath(): string {
   }
   return diffsPath;
 }
+
+export const isFileWithinFolder = (
+  fileUri: string,
+  folderPath: string,
+): boolean => {
+  try {
+    if (!fileUri || !folderPath) {
+      return false;
+    }
+
+    const fileUriParsed = URI.parse(fileUri);
+    const fileScheme = fileUriParsed.scheme || "file";
+    let filePath = fileUriParsed.path || "";
+    filePath = decodeURIComponent(filePath);
+
+    let folderWithScheme = folderPath;
+    if (!folderPath.includes("://")) {
+      folderWithScheme = `${fileScheme}://${folderPath.startsWith("/") ? "" : "/"}${folderPath}`;
+    }
+    const folderUriParsed = URI.parse(folderWithScheme);
+
+    let folderPathClean = folderUriParsed.path || "";
+    folderPathClean = decodeURIComponent(folderPathClean);
+
+    filePath = filePath.replace(/\/$/, "");
+    folderPathClean = folderPathClean.replace(/\/$/, "");
+
+    return (
+      filePath === folderPathClean || filePath.startsWith(`${folderPathClean}/`)
+    );
+  } catch (error) {
+    console.error("Error in isFileWithinFolder:", error);
+    return false;
+  }
+};

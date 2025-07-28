@@ -4,30 +4,49 @@ import { BUILT_IN_GROUP_NAME, BuiltInToolNames } from "../builtIn";
 export const createRuleBlock: Tool = {
   type: "function",
   displayTitle: "Create Rule Block",
-  wouldLikeTo: 'create a rule block for "{{{ rule_name }}}"',
-  isCurrently: 'creating a rule block for "{{{ rule_name }}}"',
-  hasAlready: 'created a rule block for "{{{ rule_name }}}"',
+  wouldLikeTo: 'create a rule block for "{{{ name }}}"',
+  isCurrently: 'creating a rule block for "{{{ name }}}"',
+  hasAlready: 'created a rule block for "{{{ name }}}"',
   readonly: false,
+  isInstant: true,
   group: BUILT_IN_GROUP_NAME,
   function: {
     name: BuiltInToolNames.CreateRuleBlock,
     description:
-      "Creates a persistent rule that applies to all future conversations. " +
-      "Use for establishing ongoing code standards or preferences (e.g. 'use named exports', 'follow Google docstrings'). " +
-      "Not for one-time instructions. Rules are stored as YAML in `.continue/rules`.",
+      'Creates a "rule" that can be referenced in future conversations. This should be used whenever you want to establish code standards / preferences that should be applied consistently, or when you want to avoid making a mistake again. To modify existing rules, use the edit tool instead.\n\nRule Types:\n- Always: Include only "rule" (always included in model context)\n- Auto Attached: Include "rule", "globs", and/or "regex" (included when files match patterns)\n- Agent Requested: Include "rule" and "description" (AI decides when to apply based on description)\n- Manual: Include only "rule" (only included when explicitly mentioned using @ruleName)',
     parameters: {
       type: "object",
-      required: ["rule_name", "rule_content"],
+      required: ["name", "rule"],
       properties: {
-        rule_name: {
+        name: {
           type: "string",
           description:
             "Short, descriptive name summarizing the rule's purpose (e.g. 'React Standards', 'Type Hints')",
         },
-        rule_content: {
+        rule: {
           type: "string",
           description:
             "Clear, imperative instruction for future code generation (e.g. 'Use named exports', 'Add Python type hints'). Each rule should focus on one specific standard.",
+        },
+        description: {
+          type: "string",
+          description:
+            "Description of when this rule should be applied. Required for Agent Requested rules (AI decides when to apply). Optional for other types.",
+        },
+        globs: {
+          type: "string",
+          description:
+            "Optional file patterns to which this rule applies (e.g. ['**/*.{ts,tsx}'] or ['src/**/*.ts', 'tests/**/*.ts'])",
+        },
+        regex: {
+          type: "string",
+          description:
+            "Optional regex patterns to match against file content. Rule applies only to files whose content matches the pattern (e.g. 'useEffect' for React hooks or '\\bclass\\b' for class definitions)",
+        },
+        alwaysApply: {
+          type: "boolean",
+          description:
+            "Whether this rule should always be applied. Set to false for Agent Requested and Manual rules. Omit or set to true for Always and Auto Attached rules.",
         },
       },
     },

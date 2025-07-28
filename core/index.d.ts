@@ -1,7 +1,11 @@
-import { DataDestination, ModelRole } from "@continuedev/config-yaml";
+import {
+  DataDestination,
+  ModelRole,
+  PromptTemplates,
+} from "@continuedev/config-yaml";
 import Parser from "web-tree-sitter";
+import { CodebaseIndexer } from "./indexing/CodebaseIndexer";
 import { LLMConfigurationStatuses } from "./llm/constants";
-import { GetGhTokenArgs } from "./protocol/ide";
 
 declare global {
   interface Window {
@@ -46,6 +50,7 @@ export interface IndexingProgressUpdate {
   shouldClearIndexes?: boolean;
   status:
     | "loading"
+    | "waiting"
     | "indexing"
     | "done"
     | "failed"
@@ -53,6 +58,7 @@ export interface IndexingProgressUpdate {
     | "disabled"
     | "cancelled";
   debugInfo?: string;
+  warnings?: string[];
 }
 
 // This is more or less a V2 of IndexingProgressUpdate for docs etc.
@@ -89,6 +95,9 @@ export interface ILLM
   extends Omit<LLMOptions, RequiredLLMOptions>,
     Required<Pick<LLMOptions, RequiredLLMOptions>> {
   get providerName(): string;
+  get underlyingProviderName(): string;
+
+  autocompleteOptions?: Partial<TabAutocompleteOptions>;
 
   complete(
     prompt: string,
@@ -113,6 +122,7 @@ export interface ILLM
     messages: ChatMessage[],
     signal: AbortSignal,
     options?: LLMFullCompletionOptions,
+    messageOptions?: MessageOption,
   ): AsyncGenerator<ChatMessage, PromptLog>;
 
   chat(
@@ -120,6 +130,11 @@ export interface ILLM
     signal: AbortSignal,
     options?: LLMFullCompletionOptions,
   ): Promise<ChatMessage>;
+
+  compileChatMessages(
+    messages: ChatMessage[],
+    options: LLMFullCompletionOpeions,
+  ): CompiledChatMessagesReport;
 
   embed(chunks: string[]): Promise<number[][]>;
 
@@ -153,6 +168,8 @@ export interface ModelInstaller {
     signal: AbortSignal,
     progressReporter?: (task: string, increment: number, total: number) => void,
   ): Promise<any>;
+
+  isInstallingModel(modelName: string): Promise<boolean>;
 }
 
 export type ContextProviderType = "normal" | "query" | "submenu";
@@ -177,6 +194,7 @@ export interface ContextProviderExtras {
   ide: IDE;
   selectedCode: RangeInFile[];
   fetch: FetchFunction;
+  isInAgentMode: boolean;
 }
 
 export interface LoadSubmenuItemsArgs {
@@ -191,15 +209,14 @@ export interface CustomContextProvider {
   description?: string;
   renderInlineAs?: string;
   type?: ContextProviderType;
+  loadSubmenuItems?: (
+    args: LoadSubmenuItemsArgs,
+  ) => Promise<ContextSubmenuItem[]>;
 
   getContextItems(
     query: string,
     extras: ContextProviderExtras,
   ): Promise<ContextItem[]>;
-
-  loadSubmenuItems?: (
-    args: LoadSubmenuItemsArgs,
-  ) => Promise<ContextSubmenuItem[]>;
 }
 
 export interface ContextSubmenuItem {
@@ -220,6 +237,7 @@ export interface SiteIndexingConfig {
   maxDepth?: number;
   faviconUrl?: string;
   useLocalCrawling?: boolean;
+  sourceFile?: string;
 }
 
 export interface DocsIndexingDetails {
@@ -238,10 +256,6 @@ export interface IContextProvider {
   ): Promise<ContextItem[]>;
 
   loadSubmenuItems(args: LoadSubmenuItemsArgs): Promise<ContextSubmenuItem[]>;
-}
-
-export interface Checkpoint {
-  [filepath: string]: string;
 }
 
 export interface Session {
@@ -356,10 +370,32 @@ export interface ThinkingChatMessage {
   toolCalls?: ToolCallDelta[];
 }
 
+/**
+ * This is meant to be equivalent to the OpenAI [usage object](https://platform.openai.com/docs/api-reference/chat/object#chat/object-usage)
+ * but potentially with additional information that is needed for other providers.
+ */
+export interface Usage {
+  completionTokens: number;
+  promptTokens: number;
+  promptTokensDetails?: {
+    cachedTokens?: number;
+    /** This an Anthropic-specific property */
+    cacheWriteTokens?: number;
+    audioTokens?: number;
+  };
+  completionTokensDetails?: {
+    acceptedPredictionTokens?: number;
+    reasoningTokens?: number;
+    rejectedPredictionTokens?: number;
+    audioTokens?: number;
+  };
+}
+
 export interface AssistantChatMessage {
   role: "assistant";
   content: MessageContent;
   toolCalls?: ToolCallDelta[];
+  usage?: Usage;
 }
 
 export interface SystemChatMessage {
@@ -422,14 +458,15 @@ export interface PromptLog {
   completion: string;
 }
 
-export type MessageModes = "chat" | "edit" | "agent";
+export type MessageModes = "chat" | "agent" | "plan";
 
 export type ToolStatus =
-  | "generating"
-  | "generated"
-  | "calling"
-  | "done"
-  | "canceled";
+  | "generating" // Tool call arguments are being streamed from the LLM
+  | "generated" // Tool call is complete and ready for execution (awaiting approval)
+  | "calling" // Tool is actively being executed
+  | "errored" // Tool execution failed with an error
+  | "done" // Tool execution completed successfully
+  | "canceled"; // Tool call was canceled by user or system
 
 // Will exist only on "assistant" messages with tool calls
 interface ToolCallState {
@@ -438,6 +475,7 @@ interface ToolCallState {
   status: ToolStatus;
   parsedArgs: any;
   output?: ContextItem[];
+  tool?: Tool;
 }
 
 interface Reasoning {
@@ -453,11 +491,11 @@ export interface ChatHistoryItem {
   editorState?: any;
   modifiers?: InputModifiers;
   promptLogs?: PromptLog[];
-  toolCallState?: ToolCallState;
+  toolCallStates?: ToolCallState[];
   isGatheringContext?: boolean;
-  checkpoint?: Checkpoint;
-  isBeforeCheckpoint?: boolean;
   reasoning?: Reasoning;
+  appliedRules?: RuleWithSource[];
+  conversationSummary?: string;
 }
 
 export interface LLMFullCompletionOptions extends BaseCompletionOptions {
@@ -476,12 +514,14 @@ export interface LLMInteractionStartChat extends LLMInteractionBase {
   kind: "startChat";
   messages: ChatMessage[];
   options: CompletionOptions;
+  provider: string;
 }
 
 export interface LLMInteractionStartComplete extends LLMInteractionBase {
   kind: "startComplete";
   prompt: string;
   options: CompletionOptions;
+  provider: string;
 }
 
 export interface LLMInteractionStartFim extends LLMInteractionBase {
@@ -489,6 +529,7 @@ export interface LLMInteractionStartFim extends LLMInteractionBase {
   prefix: string;
   suffix: string;
   options: CompletionOptions;
+  provider: string;
 }
 
 export interface LLMInteractionChunk extends LLMInteractionBase {
@@ -505,6 +546,7 @@ export interface LLMInteractionEnd extends LLMInteractionBase {
   promptTokens: number;
   generatedTokens: number;
   thinkingTokens: number;
+  usage: Usage | undefined;
 }
 
 export interface LLMInteractionSuccess extends LLMInteractionEnd {
@@ -560,13 +602,16 @@ export interface LLMOptions {
 
   title?: string;
   uniqueId?: string;
+  baseAgentSystemMessage?: string;
+  basePlanSystemMessage?: string;
   baseChatSystemMessage?: string;
+  autocompleteOptions?: Partial<TabAutocompleteOptions>;
   contextLength?: number;
   maxStopWords?: number;
   completionOptions?: CompletionOptions;
   requestOptions?: RequestOptions;
   template?: TemplateType;
-  promptTemplates?: Record<string, PromptTemplate>;
+  promptTemplates?: Partial<Record<keyof PromptTemplates, PromptTemplate>>;
   templateMessages?: (messages: ChatMessage[]) => string;
   logger?: ILLMLogger;
   llmRequestHook?: (model: string, prompt: string) => any;
@@ -574,6 +619,7 @@ export interface LLMOptions {
 
   // continueProperties
   apiKeyLocation?: string;
+  envSecretLocations?: Record<string, string>;
   apiBase?: string;
   orgScopeId?: string | null;
 
@@ -602,6 +648,8 @@ export interface LLMOptions {
   // AWS options
   profile?: string;
   modelArn?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
 
   // AWS and VertexAI Options
   region?: string;
@@ -613,6 +661,8 @@ export interface LLMOptions {
   deploymentId?: string;
 
   env?: Record<string, string | number | boolean>;
+
+  sourceFile?: string;
 }
 
 type RequireAtLeastOne<T, Keys extends keyof T = keyof T> = Pick<
@@ -652,11 +702,24 @@ export type CustomLLM = RequireAtLeastOne<
 
 // IDE
 
-export type DiffLineType = "new" | "old" | "same";
+export type DiffType = "new" | "old" | "same";
 
-export interface DiffLine {
-  type: DiffLineType;
+export interface DiffObject {
+  type: DiffType;
+}
+
+export interface DiffLine extends DiffObject {
   line: string;
+}
+
+interface DiffChar extends DiffObject {
+  char: string;
+  oldIndex?: number; // Character index assuming a flattened line string.
+  newIndex?: number;
+  oldCharIndexInLine?: number; // Character index assuming new lines reset the character index to 0.
+  newCharIndexInLine?: number;
+  oldLineIndex?: number;
+  newLineIndex?: number;
 }
 
 export interface Problem {
@@ -678,6 +741,7 @@ export interface IdeInfo {
   version: string;
   remoteName: string;
   extensionVersion: string;
+  isPrerelease: boolean;
 }
 
 export interface BranchAndDir {
@@ -724,6 +788,8 @@ export interface IDE {
   getClipboardContent(): Promise<{ text: string; copiedAt: string }>;
 
   isTelemetryEnabled(): Promise<boolean>;
+
+  isWorkspaceRemote(): Promise<boolean>;
 
   getUniqueId(): Promise<string>;
 
@@ -773,15 +839,11 @@ export interface IDE {
       }
   >;
 
-  getLastFileSaveTimestamp?(): number;
-
-  updateLastFileSaveTimestamp?(): void;
-
   getPinnedFiles(): Promise<string[]>;
 
-  getSearchResults(query: string): Promise<string>;
+  getSearchResults(query: string, maxResults?: number): Promise<string>;
 
-  getFileResults(pattern: string): Promise<string[]>;
+  getFileResults(pattern: string, maxResults?: number): Promise<string[]>;
 
   subprocess(command: string, cwd?: string): Promise<[string, string]>;
 
@@ -805,8 +867,6 @@ export interface IDE {
 
   getFileStats(files: string[]): Promise<FileStatsMap>;
 
-  getGitHubAuthToken(args: GetGhTokenArgs): Promise<string | undefined>;
-
   // Secret Storage
   readSecrets(keys: string[]): Promise<Record<string, string>>;
 
@@ -814,6 +874,8 @@ export interface IDE {
 
   // LSP
   gotoDefinition(location: Location): Promise<RangeInFile[]>;
+  gotoTypeDefinition(location: Location): Promise<RangeInFile[]>; // TODO: add to jetbrains
+  getSignatureHelp(location: Location): Promise<SignatureHelp | null>; // TODO: add to jetbrains
 
   // Callbacks
   onDidChangeActiveTextEditor(callback: (fileUri: string) => void): void;
@@ -833,14 +895,45 @@ export interface ContinueSDK {
   config: ContinueConfig;
   fetch: FetchFunction;
   completionOptions?: LLMFullCompletionOptions;
+  abortController: AbortController;
 }
 
-export interface SlashCommand {
+/* Be careful changing SlashCommand or SlashCommandDescription, config.ts can break */
+export interface SlashCommandDescription {
   name: string;
   description: string;
   prompt?: string;
   params?: { [key: string]: any };
+}
+
+export interface SlashCommand extends SlashCommandDescription {
   run: (sdk: ContinueSDK) => AsyncGenerator<string | undefined>;
+}
+
+export interface SlashCommandWithSource extends SlashCommandDescription {
+  run?: (sdk: ContinueSDK) => AsyncGenerator<string | undefined>; // Optional - only needed for legacy
+  source: SlashCommandSource;
+  promptFile?: string;
+  overrideSystemMessage?: string;
+}
+
+export type SlashCommandSource =
+  | "built-in-legacy"
+  | "built-in"
+  | "json-custom-command"
+  | "config-ts-slash-command"
+  | "yaml-prompt-block"
+  | "mcp-prompt"
+  | "prompt-file-v1"
+  | "prompt-file-v2"
+  | "invokable-rule";
+
+export interface SlashCommandDescWithSource extends SlashCommandDescription {
+  isLegacy: boolean; // Maps to if slashcommand.run exists
+  source: SlashCommandSource;
+  promptFile?: string;
+  mcpServerName?: string;
+  mcpArgs?: MCPPromptArgs;
 }
 
 // Config
@@ -908,7 +1001,8 @@ export type TemplateType =
   | "llava"
   | "gemma"
   | "granite"
-  | "llama3";
+  | "llama3"
+  | "codestral";
 
 export interface RequestOptions {
   timeout?: number;
@@ -942,12 +1036,11 @@ export interface ContextProviderWithParams {
   params: { [key: string]: any };
 }
 
-export type SlashCommandDescription = Omit<SlashCommand, "run">;
-
 export interface CustomCommand {
   name: string;
   prompt: string;
   description?: string;
+  sourceFile?: string;
 }
 
 export interface Prediction {
@@ -966,7 +1059,12 @@ export interface ToolExtras {
   fetch: FetchFunction;
   tool: Tool;
   toolCallId?: string;
-  onPartialOutput?: (params: { toolCallId: string, contextItems: ContextItem[] }) => void;
+  onPartialOutput?: (params: {
+    toolCallId: string;
+    contextItems: ContextItem[];
+  }) => void;
+  config: ContinueConfig;
+  codeBaseIndexer?: CodebaseIndexer;
 }
 
 export interface Tool {
@@ -983,9 +1081,11 @@ export interface Tool {
   isCurrently?: string;
   hasAlready?: string;
   readonly: boolean;
+  isInstant?: boolean;
   uri?: string;
   faviconUrl?: string;
   group: string;
+  originalFunctionName?: string;
 }
 
 interface ToolChoice {
@@ -994,6 +1094,13 @@ interface ToolChoice {
     name: string;
   };
 }
+
+export interface ConfigDependentToolParams {
+  rules: RuleWithSource[];
+  enableExperimentalTools: boolean;
+}
+
+export type GetTool = (params: ConfigDependentToolParams) => Tool;
 
 export interface BaseCompletionOptions {
   temperature?: number;
@@ -1008,6 +1115,7 @@ export interface BaseCompletionOptions {
   numThreads?: number;
   useMmap?: boolean;
   keepAlive?: number;
+  numGpu?: number;
   raw?: boolean;
   stream?: boolean;
   prediction?: Prediction;
@@ -1015,6 +1123,7 @@ export interface BaseCompletionOptions {
   toolChoice?: ToolChoice;
   reasoning?: boolean;
   reasoningBudgetTokens?: number;
+  promptCaching?: boolean;
 }
 
 export interface ModelCapability {
@@ -1025,11 +1134,13 @@ export interface ModelCapability {
 export interface ModelDescription {
   title: string;
   provider: string;
+  underlyingProviderName: string;
   model: string;
   apiKey?: string;
 
   apiBase?: string;
   apiKeyLocation?: string;
+  envSecretLocations?: Record<string, string>;
   orgScopeId?: string | null;
 
   onPremProxyUrl?: string | null;
@@ -1038,6 +1149,8 @@ export interface ModelDescription {
   maxStopWords?: number;
   template?: TemplateType;
   completionOptions?: BaseCompletionOptions;
+  baseAgentSystemMessage?: string;
+  basePlanSystemMessage?: string;
   baseChatSystemMessage?: string;
   requestOptions?: RequestOptions;
   promptTemplates?: { [key: string]: string };
@@ -1045,6 +1158,8 @@ export interface ModelDescription {
   capabilities?: ModelCapability;
   roles?: ModelRole[];
   configurationStatus?: LLMConfigurationStatuses;
+
+  sourceFile?: string;
 }
 
 export interface JSONEmbedOptions {
@@ -1077,10 +1192,12 @@ export interface RerankerDescription {
   params?: { [key: string]: any };
 }
 
+// TODO: We should consider renaming this to AutocompleteOptions.
 export interface TabAutocompleteOptions {
   disable: boolean;
   maxPromptTokens: number;
   debounceDelay: number;
+  modelTimeout: number;
   maxSuffixPercentage: number;
   prefixPercentage: number;
   transform?: boolean;
@@ -1091,6 +1208,7 @@ export interface TabAutocompleteOptions {
   useCache: boolean;
   onlyMyCode: boolean;
   useRecentlyEdited: boolean;
+  useRecentlyOpened: boolean;
   disableInFiles?: string[];
   useImports?: boolean;
   showWhateverWeHaveAtXMs?: number;
@@ -1099,6 +1217,7 @@ export interface TabAutocompleteOptions {
   experimental_includeRecentlyVisitedRanges: boolean | number;
   experimental_includeRecentlyEditedRanges: boolean | number;
   experimental_includeDiff: boolean | number;
+  experimental_enableStaticContextualization: boolean;
 }
 
 export interface StdioOptions {
@@ -1106,19 +1225,33 @@ export interface StdioOptions {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  cwd?: string;
+  requestOptions?: RequestOptions;
 }
 
 export interface WebSocketOptions {
   type: "websocket";
   url: string;
+  requestOptions?: RequestOptions;
 }
 
 export interface SSEOptions {
   type: "sse";
   url: string;
+  requestOptions?: RequestOptions;
 }
 
-export type TransportOptions = StdioOptions | WebSocketOptions | SSEOptions;
+export interface StreamableHTTPOptions {
+  type: "streamable-http";
+  url: string;
+  requestOptions?: RequestOptions;
+}
+
+export type TransportOptions =
+  | StdioOptions
+  | WebSocketOptions
+  | SSEOptions
+  | StreamableHTTPOptions;
 
 export interface MCPOptions {
   name: string;
@@ -1134,25 +1267,37 @@ export type MCPConnectionStatus =
   | "error"
   | "not-connected";
 
+export type MCPPromptArgs = {
+  name: string;
+  description?: string;
+  required?: boolean;
+}[];
+
 export interface MCPPrompt {
   name: string;
   description?: string;
-  arguments?: {
-    name: string;
-    description?: string;
-    required?: boolean;
-  }[];
+  arguments?: MCPPromptArgs;
 }
 
 // Leaving here to ideate on
 // export type ContinueConfigSource = "local-yaml" | "local-json" | "hub-assistant" | "hub"
 
+// https://modelcontextprotocol.io/docs/concepts/resources#direct-resources
 export interface MCPResource {
   name: string;
   uri: string;
   description?: string;
   mimeType?: string;
 }
+
+// https://modelcontextprotocol.io/docs/concepts/resources#resource-templates
+export interface MCPResourceTemplate {
+  uriTemplate: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
 export interface MCPTool {
   name: string;
   description?: string;
@@ -1169,6 +1314,8 @@ export interface MCPServerStatus extends MCPOptions {
   prompts: MCPPrompt[];
   tools: MCPTool[];
   resources: MCPResource[];
+  resourceTemplates: MCPResourceTemplate[];
+  sourceFile?: string;
 }
 
 export interface ContinueUIConfig {
@@ -1178,6 +1325,7 @@ export interface ContinueUIConfig {
   showChatScrollbar?: boolean;
   codeWrap?: boolean;
   showSessionTabs?: boolean;
+  autoAcceptEditToolDiffs?: boolean;
 }
 
 export interface ContextMenuConfig {
@@ -1197,16 +1345,11 @@ export interface ExperimentalModelRoles {
 export interface ExperimentalMCPOptions {
   transport: TransportOptions;
   faviconUrl?: string;
+  timeout?: number;
 }
 
-export type EditStatus =
-  | "not-started"
-  | "streaming"
-  | "accepting"
-  | "accepting:full-diff"
-  | "done";
-
 export type ApplyStateStatus =
+  | "not-started" // Apply state created but not necessarily streaming
   | "streaming" // Changes are being applied to the file
   | "done" // All changes have been applied, awaiting user to accept/reject
   | "closed"; // All changes have been applied. Note that for new files, we immediately set the status to "closed"
@@ -1217,7 +1360,42 @@ export interface ApplyState {
   numDiffs?: number;
   filepath?: string;
   fileContent?: string;
+  originalFileContent?: string;
   toolCallId?: string;
+}
+
+export interface StreamDiffLinesPayload {
+  prefix: string;
+  highlighted: string;
+  suffix: string;
+  input: string;
+  language: string | undefined;
+  modelTitle: string | undefined;
+  includeRulesInSystemMessage: boolean;
+  fileUri?: string;
+}
+
+export interface HighlightedCodePayload {
+  rangeInFileWithContents: RangeInFileWithContents;
+  prompt?: string;
+  shouldRun?: boolean;
+}
+
+export interface AcceptOrRejectDiffPayload {
+  filepath?: string;
+  streamId?: string;
+}
+
+export interface ShowFilePayload {
+  filepath: string;
+}
+
+export interface ApplyToFilePayload {
+  streamId: string;
+  filepath?: string;
+  text: string;
+  toolCallId?: string;
+  isSearchAndReplace?: boolean;
 }
 
 export interface RangeInFileWithContents {
@@ -1229,7 +1407,79 @@ export interface RangeInFileWithContents {
   contents: string;
 }
 
-export type CodeToEdit = RangeInFileWithContents | FileWithContents;
+export interface RangeInFileWithNextEditInfo {
+  filepath: string;
+  range: Range;
+  fileContents: string;
+  editText: string;
+  afterCursorPos: Position;
+  beforeCursorPos: Position;
+  workspaceDir: string;
+}
+
+export type SetCodeToEditPayload = RangeInFileWithContents | FileWithContents;
+
+/**
+ * Signature help represents the signature of something
+ * callable. There can be multiple signatures but only one
+ * active and only one active parameter.
+ */
+export class SignatureHelp {
+  /**
+   * One or more signatures.
+   */
+  signatures: SignatureInformation[];
+
+  /**
+   * The active signature.
+   */
+  activeSignature: number;
+
+  /**
+   * The active parameter of the active signature.
+   */
+  activeParameter: number;
+}
+
+/**
+ * Represents the signature of something callable. A signature
+ * can have a label, like a function-name, a doc-comment, and
+ * a set of parameters.
+ */
+export class SignatureInformation {
+  /**
+   * The label of this signature. Will be shown in
+   * the UI.
+   */
+  label: string;
+
+  /**
+   * The parameters of this signature.
+   */
+  parameters: ParameterInformation[];
+
+  /**
+   * The index of the active parameter.
+   *
+   * If provided, this is used in place of {@linkcode SignatureHelp.activeParameter}.
+   */
+  activeParameter?: number;
+}
+
+/**
+ * Represents a parameter of a callable-signature. A parameter can
+ * have a label and a doc-comment.
+ */
+export class ParameterInformation {
+  /**
+   * The label of this signature.
+   *
+   * Either a string or inclusive start and exclusive end offsets within its containing
+   * {@link SignatureInformation.label signature label}. *Note*: A label of type string must be
+   * a substring of its containing signature information's {@link SignatureInformation.label label}.
+   */
+  label: string | [number, number];
+}
 
 /**
  * Represents the configuration for a quick action in the Code Lens.
@@ -1265,6 +1515,7 @@ export interface ExperimentalConfig {
   modelRoles?: ExperimentalModelRoles;
   defaultContext?: DefaultContextProvider[];
   promptPath?: string;
+  enableExperimentalTools?: boolean;
 
   /**
    * Quick actions are a way to add custom commands to the Code Lens of
@@ -1284,6 +1535,28 @@ export interface ExperimentalConfig {
    */
   useChromiumForDocsCrawling?: boolean;
   modelContextProtocolServers?: ExperimentalMCPOptions[];
+
+  /**
+   * If enabled, will add the current file as context.
+   */
+  useCurrentFileAsContext?: boolean;
+
+  /**
+   * If enabled, will enable next edit in place of autocomplete
+   */
+  optInNextEditFeature?: boolean;
+
+  /**
+   * If enabled, @codebase will only use tool calling
+   * instead of embeddings, FTS, recently edited files, etc.
+   */
+  codebaseToolCallingOnly?: boolean;
+
+  /**
+   * If enabled, static contextualization will be used to
+   * gather context for the model where necessary.
+   */
+  enableStaticContextualization?: boolean;
 }
 
 export interface AnalyticsConfig {
@@ -1295,6 +1568,7 @@ export interface AnalyticsConfig {
 export interface JSONModelDescription {
   title: string;
   provider: string;
+  underlyingProviderName: string;
   model: string;
   apiKey?: string;
   apiBase?: string;
@@ -1370,7 +1644,7 @@ export interface Config {
   /** Request options that will be applied to all models and context providers */
   requestOptions?: RequestOptions;
   /** The list of slash commands that will be available in the sidebar */
-  slashCommands?: SlashCommand[];
+  slashCommands?: (SlashCommand | SlashCommandWithSource)[];
   /** Each entry in this array will originally be a ContextProviderWithParams, the same object from your config.json, but you may add CustomContextProviders.
    * A CustomContextProvider requires you only to define a title and getContextItems function. When you type '@title <query>', Continue will call `getContextItems(query)`.
    */
@@ -1407,7 +1681,7 @@ export interface ContinueConfig {
   // systemMessage?: string;
   completionOptions?: BaseCompletionOptions;
   requestOptions?: RequestOptions;
-  slashCommands: SlashCommand[];
+  slashCommands: SlashCommandWithSource[];
   contextProviders: IContextProvider[];
   disableSessionTitles?: boolean;
   disableIndexing?: boolean;
@@ -1430,7 +1704,7 @@ export interface BrowserSerializedContinueConfig {
   // systemMessage?: string;
   completionOptions?: BaseCompletionOptions;
   requestOptions?: RequestOptions;
-  slashCommands: SlashCommandDescription[];
+  slashCommands: SlashCommandDescWithSource[];
   contextProviders: ContextProviderDescription[];
   disableIndexing?: boolean;
   disableSessionTitles?: boolean;
@@ -1491,17 +1765,41 @@ export interface TerminalOptions {
   waitForCompletion?: boolean;
 }
 
+export type RuleSource =
+  | "default-chat"
+  | "default-plan"
+  | "default-agent"
+  | "model-options-chat"
+  | "model-options-plan"
+  | "model-options-agent"
+  | "rules-block"
+  | "colocated-markdown"
+  | "json-systemMessage"
+  | ".continuerules";
+
 export interface RuleWithSource {
   name?: string;
   slug?: string;
-  source:
-    | "default"
-    | "model-chat-options"
-    | "rules-block"
-    | "json-systemMessage"
-    | ".continuerules";
-  if?: string;
+  source: RuleSource;
+  globs?: string | string[];
+  regex?: string | string[];
   rule: string;
   description?: string;
   ruleFile?: string;
+  alwaysApply?: boolean;
+}
+export interface CompleteOnboardingPayload {
+  mode: OnboardingModes;
+  provider?: string;
+  apiKey?: string;
+}
+
+export interface CompiledMessagesResult {
+  compiledChatMessages: ChatMessage[];
+  didPrune: boolean;
+  contextPercentage: number;
+}
+
+export interface MessageOption {
+  precompiled: boolean;
 }

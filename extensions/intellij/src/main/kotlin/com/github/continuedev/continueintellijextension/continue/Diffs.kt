@@ -9,7 +9,7 @@ import com.intellij.diff.contents.DiffContent
 import com.intellij.diff.requests.SimpleDiffRequest
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
-import com.intellij.openapi.components.ServiceManager
+import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
@@ -18,7 +18,6 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import java.awt.Toolkit
 import java.io.File
-import java.net.URI
 import java.nio.file.Paths
 import javax.swing.Action
 import javax.swing.JComponent
@@ -62,7 +61,7 @@ class DiffManager(private val project: Project) : DumbAware {
             file.createNewFile()
         }
         file.writeText(replacement)
-        openDiffWindow(URI(filepath).toString(), file.toURI().toString(), stepIndex)
+        openDiffWindow(UriUtils.parseUri(filepath).toString(), file.toURI().toString(), stepIndex)
     }
 
     private fun cleanUpFile(file2: String) {
@@ -80,7 +79,8 @@ class DiffManager(private val project: Project) : DumbAware {
         val diffInfo = diffInfoMap[file] ?: return
 
         // Write contents to original file
-        val virtualFile = LocalFileSystem.getInstance().findFileByPath(URI(diffInfo.originalFilepath).path) ?: return
+        val virtualFile =
+            LocalFileSystem.getInstance().findFileByPath(UriUtils.parseUri(diffInfo.originalFilepath).path) ?: return
         val document = FileDocumentManager.getInstance().getDocument(virtualFile) ?: return
         WriteCommandAction.runWriteCommandAction(project) {
             document.setText(File(file).readText())
@@ -88,11 +88,7 @@ class DiffManager(private val project: Project) : DumbAware {
         FileDocumentManager.getInstance().saveDocument(document)
 
         // Notify server of acceptance
-        val continuePluginService = ServiceManager.getService(
-            project,
-            ContinuePluginService::class.java
-        )
-        continuePluginService.ideProtocolClient?.sendAcceptRejectDiff(true, diffInfo.stepIndex)
+        project.service<ContinuePluginService>().ideProtocolClient?.sendAcceptRejectDiff(true, diffInfo.stepIndex)
 
         // Clean up state
         cleanUpFile(file)
@@ -101,13 +97,10 @@ class DiffManager(private val project: Project) : DumbAware {
     fun rejectDiff(file2: String?) {
         val file = (file2 ?: lastFile2) ?: return
         val diffInfo = diffInfoMap[file] ?: return
-        val continuePluginService = ServiceManager.getService(
-            project,
-            ContinuePluginService::class.java
-        )
+        val continuePluginService = project.service<ContinuePluginService>()
         continuePluginService.ideProtocolClient?.deleteAtIndex(diffInfo.stepIndex)
         continuePluginService.ideProtocolClient?.sendAcceptRejectDiff(false, diffInfo.stepIndex)
-
+        continuePluginService.coreMessenger?.request("cancelApply", null, null) {}
         cleanUpFile(file)
     }
 
@@ -119,8 +112,8 @@ class DiffManager(private val project: Project) : DumbAware {
         lastFile2 = file2
 
         // Create a DiffContent for each of the texts you want to compare
-        val content1: DiffContent = DiffContentFactory.getInstance().create(File(URI(file1)).readText())
-        val content2: DiffContent = DiffContentFactory.getInstance().create(File(URI(file2)).readText())
+        val content1: DiffContent = DiffContentFactory.getInstance().create(UriUtils.uriToFile(file1).readText())
+        val content2: DiffContent = DiffContentFactory.getInstance().create(UriUtils.uriToFile(file2).readText())
 
         // Create a SimpleDiffRequest and populate it with the DiffContents and titles
         val diffRequest = SimpleDiffRequest("Continue Diff", content1, content2, "Old", "New")

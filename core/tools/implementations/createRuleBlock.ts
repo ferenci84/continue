@@ -1,52 +1,50 @@
-import { ConfigYaml } from "@continuedev/config-yaml";
-import * as YAML from "yaml";
+import { createRuleMarkdown } from "@continuedev/config-yaml";
 import { ToolImpl } from ".";
-import { joinPathsToUri } from "../../util/uri";
+import { RuleWithSource } from "../..";
+import { createRuleFilePath } from "../../config/markdown/utils";
+import {
+  getBooleanArg,
+  getOptionalStringArg,
+  getStringArg,
+} from "../parseArgs";
 
-export interface CreateRuleBlockArgs {
-  rule_name: string;
-  rule_content: string;
-}
+export type CreateRuleBlockArgs = Pick<
+  Required<RuleWithSource>,
+  "rule" | "name"
+> &
+  Pick<RuleWithSource, "globs" | "regex" | "description" | "alwaysApply">;
 
-export const createRuleBlockImpl: ToolImpl = async (
-  args: CreateRuleBlockArgs,
-  extras,
-) => {
-  // Sanitize rule name for use in filename (remove special chars, replace spaces with dashes)
-  const safeRuleName = args.rule_name
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-");
+export const createRuleBlockImpl: ToolImpl = async (args, extras) => {
+  const name = getStringArg(args, "name");
+  const rule = getStringArg(args, "rule");
 
-  const ruleBlock: ConfigYaml = {
-    name: args.rule_name,
-    version: "0.0.1",
-    rules: [
-      // This can be either a string or an object with {name, rule}
-      // Since we want a simple rule, we use the string format
-      args.rule_content,
-    ],
-  };
+  const description = getOptionalStringArg(args, "description");
+  const regex = getOptionalStringArg(args, "regex");
+  const globs = getOptionalStringArg(args, "globs");
+  const alwaysApply = getBooleanArg(args, "alwaysApply", false);
 
-  // Convert the rule block to YAML
-  const ruleYaml = YAML.stringify(ruleBlock);
+  const fileContent = createRuleMarkdown(name, rule, {
+    alwaysApply,
+    description,
+    globs,
+    regex,
+  });
 
   const [localContinueDir] = await extras.ide.getWorkspaceDirs();
-  const rulesDirUri = joinPathsToUri(
-    localContinueDir,
-    ".continue",
-    "rules",
-    `${safeRuleName}.yaml`,
-  );
+  const ruleFilePath = createRuleFilePath(localContinueDir, name);
 
-  await extras.ide.writeFile(rulesDirUri, ruleYaml);
-  await extras.ide.openFile(rulesDirUri);
+  await extras.ide.writeFile(ruleFilePath, fileContent);
+  await extras.ide.openFile(ruleFilePath);
 
   return [
     {
-      name: "Rule Block Created",
-      description: `Created ${args.rule_name} rule`,
-      content: ruleYaml,
+      name: "New Rule Block",
+      description: description || "",
+      uri: {
+        type: "file",
+        value: ruleFilePath,
+      },
+      content: `Rule created successfully`,
     },
   ];
 };

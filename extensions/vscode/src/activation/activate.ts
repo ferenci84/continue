@@ -1,8 +1,9 @@
+import * as path from "path";
+
 import { getContinueRcPath, getTsConfigPath } from "core/util/paths";
 import { Telemetry } from "core/util/posthog";
 import * as vscode from "vscode";
 
-import * as path from "path";
 import { VsCodeExtension } from "../extension/VsCodeExtension";
 import registerQuickFixProvider from "../lang-server/codeActions";
 import { getExtensionVersion } from "../util/util";
@@ -23,8 +24,8 @@ export async function activateExtension(context: vscode.ExtensionContext) {
 
   // Load Continue configuration
   if (!context.globalState.get("hasBeenInstalled")) {
-    context.globalState.update("hasBeenInstalled", true);
-    Telemetry.capture(
+    void context.globalState.update("hasBeenInstalled", true);
+    void Telemetry.capture(
       "install",
       {
         extensionVersion: getExtensionVersion(),
@@ -33,20 +34,26 @@ export async function activateExtension(context: vscode.ExtensionContext) {
     );
   }
 
-  // Only set the YAML schema configuration if it hasn't been set before
-  if (!context.globalState.get("yamlSchemaConfigured")) {
-    vscode.workspace.getConfiguration("yaml").update(
+  // Register config.yaml schema by removing old entries and adding new one (uri.fsPath changes with each version)
+  const yamlMatcher = ".continue/**/*.yaml";
+  const yamlConfig = vscode.workspace.getConfiguration("yaml");
+
+  const newPath = path.join(
+    context.extension.extensionUri.fsPath,
+    "config-yaml-schema.json",
+  );
+
+  try {
+    await yamlConfig.update(
       "schemas",
-      {
-        [path.join(
-          context.extension.extensionUri.fsPath,
-          "config-yaml-schema.json",
-        )]: [".continue/**/*.yaml"],
-      },
+      { [newPath]: [yamlMatcher] },
       vscode.ConfigurationTarget.Global,
     );
-    // Mark that we've configured the YAML schema
-    context.globalState.update("yamlSchemaConfigured", true);
+  } catch (error) {
+    console.error(
+      "Failed to register Continue config.yaml schema, most likely, YAML extension is not installed",
+      error,
+    );
   }
 
   const api = new VsCodeContinueApi(vscodeExtension);

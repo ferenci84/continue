@@ -4,18 +4,14 @@ data class CopyTextParams(
     val text: String
 )
 
-data class SetGitHubAuthTokenParams(
-    val token: String
-)
-
 data class ApplyToFileParams(
     val text: String,
     val streamId: String,
     val filepath: String?,
-    val toolCallId: String?
+    val toolCallId: String?,
+    val isSearchReplace: Boolean? = null
 )
 
 data class InsertAtCursorParams(
     val text: String
 )
-

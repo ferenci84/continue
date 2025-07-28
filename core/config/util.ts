@@ -10,7 +10,7 @@ import {
   JSONModelDescription,
   PromptTemplate,
 } from "../";
-import { DEFAULT_CHAT_SYSTEM_MESSAGE } from "../llm/constructMessages";
+import { DEFAULT_CHAT_SYSTEM_MESSAGE } from "../llm/defaultSystemMessages";
 import { GlobalContext } from "../util/GlobalContext";
 import { editConfigFile } from "../util/paths";
 
@@ -38,7 +38,7 @@ export function addModel(
         (prev, curr) => (curr.title.startsWith(model.title) ? prev + 1 : prev),
         0,
       );
-      if (numMatches !== 0) {
+      if (numMatches !== undefined && numMatches > 0) {
         model.title = `${model.title} (${numMatches})`;
       }
 
@@ -63,7 +63,7 @@ export function addModel(
           "name" in curr && curr.name.startsWith(model.title) ? prev + 1 : prev,
         0,
       );
-      if (numMatches !== 0) {
+      if (numMatches !== undefined && numMatches > 0) {
         model.title = `${model.title} (${numMatches})`;
       }
 
@@ -77,6 +77,7 @@ export function addModel(
         model: model.model,
         apiKey: model.apiKey,
         apiBase: model.apiBase,
+        maxStopWords: model.maxStopWords,
         defaultCompletionOptions: model.completionOptions,
       };
       if (model.systemMessage) {

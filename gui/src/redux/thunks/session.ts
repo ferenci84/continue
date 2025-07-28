@@ -8,6 +8,7 @@ import {
   deleteSessionMetadata,
   newSession,
   setAllSessionMetadata,
+  setIsSessionMetadataLoading,
   updateSessionMetadata,
 } from "../slices/sessionSlice";
 import { ThunkApiType } from "../store";
@@ -43,6 +44,7 @@ export const refreshSessionMetadata = createAsyncThunk<
   if (result.status === "error") {
     throw new Error(result.error);
   }
+  dispatch(setIsSessionMetadataLoading(false));
   dispatch(setAllSessionMetadata(result.content));
   return result.content;
 });
@@ -63,7 +65,7 @@ export const deleteSession = createAsyncThunk<void, string, ThunkApiType>(
     if (result.status === "error") {
       throw new Error(result.error);
     }
-    dispatch(refreshSessionMetadata({}));
+    void dispatch(refreshSessionMetadata({}));
   },
 );
 
@@ -180,7 +182,6 @@ export const saveCurrentSession = createAsyncThunk<
               "chatDescriber/describe",
               {
                 text: assistantResponse,
-                selectedModelTitle: selectedChatModel.title,
               },
             );
             if (result.status === "success" && result.content) {

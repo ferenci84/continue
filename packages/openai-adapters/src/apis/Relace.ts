@@ -67,7 +67,6 @@ export class RelaceApi implements BaseLlmApi {
     body: ChatCompletionCreateParamsStreaming,
     signal: AbortSignal,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const fetch = customFetch(this.config.requestOptions);
     const headers = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.config.apiKey}`,
@@ -98,12 +97,16 @@ export class RelaceApi implements BaseLlmApi {
     };
 
     const url = this.apiBase + "code/apply";
-    const response = await fetch(url, {
+    const response = await customFetch(this.config.requestOptions)(url, {
       method: "POST",
       headers,
       body: JSON.stringify(data),
       signal,
     });
+
+    if (response.status === 499) {
+      return; // Aborted by user
+    }
 
     const result = (await response.json()) as any;
     const mergedCode = result.mergedCode;

@@ -52,6 +52,7 @@ They are concerned with:
 - [x] OpenRouter
 - [x] OpenAI
 - [ ] !Ollama
+- [x] OVHCLoud
 - [ ] Replicate
 - [ ] SageMaker
 - [x] SambaNova
@@ -63,7 +64,7 @@ They are concerned with:
 - [x] Vllm
 - [ ] Vertex AI
 - [x] Voyage AI
-- [ ] WatsonX
+- [x] WatsonX
 - [x] xAI
 - [x] Fireworks
 - [x] Moonshot

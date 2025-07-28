@@ -174,6 +174,7 @@ export const models: { [key: string]: ModelPackage } = {
       "llama.cpp",
       "replicate",
       "cerebras",
+      "ovhcloud",
       "nebius",
       "scaleway",
     ],
@@ -371,6 +372,7 @@ export const models: { [key: string]: ModelPackage } = {
       "ollama",
       "lmstudio",
       "together",
+      "ovhcloud",
       "llama.cpp",
       "replicate",
       "nebius",
@@ -421,33 +423,6 @@ export const models: { [key: string]: ModelPackage } = {
     ],
     isOpenSource: true,
   },
-  llama3170bTrial: {
-    title: "Codellama 70b (Free Trial)",
-    description:
-      "The best code model from Meta, fine-tuned for code generation and conversation",
-    refUrl: "",
-    params: {
-      title: "CodeLlama-70b",
-      model: "codellama-70b",
-      contextLength: 4096,
-    },
-    icon: "meta.png",
-    providerOptions: ["free-trial"],
-    isOpenSource: false,
-  },
-  llama31405bTrial: {
-    title: "Llama3.1 405b (Free Trial)",
-    description: "The latest Llama model from Meta, fine-tuned for chat",
-    refUrl: "",
-    params: {
-      title: "Llama3.1-405b",
-      model: "llama3.1-405b",
-      contextLength: 8192,
-    },
-    icon: "meta.png",
-    providerOptions: ["free-trial"],
-    isOpenSource: false,
-  },
   mixtralTrial: {
     title: "Mixtral (Free Trial)",
     description:
@@ -459,7 +434,7 @@ export const models: { [key: string]: ModelPackage } = {
       contextLength: 4096,
     },
     icon: "mistral.png",
-    providerOptions: ["free-trial", "groq"],
+    providerOptions: ["groq"],
     isOpenSource: false,
   },
   llama38bChat: {
@@ -511,7 +486,7 @@ export const models: { [key: string]: ModelPackage } = {
       contextLength: 65536,
     },
     icon: "meta.png",
-    providerOptions: [],
+    providerOptions: ["ovhcloud"],
     isOpenSource: false,
   },
   llama3170bChat: {
@@ -524,7 +499,7 @@ export const models: { [key: string]: ModelPackage } = {
       contextLength: 8192,
     },
     icon: "meta.png",
-    providerOptions: ["groq", "scaleway", "nebius"],
+    providerOptions: ["groq", "ovhcloud", "scaleway", "nebius"],
     isOpenSource: false,
   },
   llama31405bChat: {
@@ -635,6 +610,7 @@ export const models: { [key: string]: ModelPackage } = {
       "ollama",
       "lmstudio",
       "together",
+      "ovhcloud",
       "llama.cpp",
       "replicate",
       "nebius",
@@ -722,13 +698,7 @@ export const models: { [key: string]: ModelPackage } = {
       model: "phind-codellama-34b",
       contextLength: 4096,
     },
-    providerOptions: [
-      "ollama",
-      "lmstudio",
-      "llama.cpp",
-      "replicate",
-      "free-trial",
-    ],
+    providerOptions: ["ollama", "lmstudio", "llama.cpp", "replicate"],
     isOpenSource: true,
   },
   codestral: {
@@ -753,7 +723,7 @@ export const models: { [key: string]: ModelPackage } = {
       contextLength: 256_000,
     },
     icon: "mistral.png",
-    providerOptions: ["mistral"],
+    providerOptions: ["ovhcloud", "mistral"],
     isOpenSource: true,
   },
   mistral7b: {
@@ -856,7 +826,7 @@ export const models: { [key: string]: ModelPackage } = {
       apiKey: "<API_KEY>",
     },
     icon: "gemini.png",
-    providerOptions: ["gemini", "free-trial", "askSage"],
+    providerOptions: ["gemini", "askSage"],
     isOpenSource: false,
   },
   gemini15Flash: {
@@ -929,12 +899,82 @@ export const models: { [key: string]: ModelPackage } = {
     providerOptions: ["gemini"],
     isOpenSource: false,
   },
-  commandR: {
-    title: "Command R",
+  gemini25Pro: {
+    title: "Gemini 2.5 Pro",
+    description:
+      "Google's thinking by default Pro model with up to 64k output context. Best for complex tasks involving reasoning.",
+    params: {
+      title: "Gemini 2.5 Pro",
+      model: "gemini-2.5-pro",
+      contextLength: 1_048_576,
+      apiKey: "<API_KEY>",
+    },
+    icon: "gemini.png",
+    providerOptions: ["gemini"],
+    isOpenSource: false,
+  },
+  c4aiAyaExpanse8B: {
+    title: "C4AI Aya Expanse 8B",
+    description:
+      "Aya Expanse is a massively multilingual large language model excelling in enterprise-scale tasks.",
+    params: {
+      model: "c4ai-aya-expanse-8b",
+      contextLength: 8_000,
+      title: "C4AI Aya Expanse 8B",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  c4aiAyaExpanse32B: {
+    title: "C4AI Aya Expanse 32B",
+    description:
+      "Aya Expanse is a massively multilingual large language model excelling in enterprise-scale tasks.",
+    params: {
+      model: "c4ai-aya-expanse-32b",
+      contextLength: 128_000,
+      title: "C4AI Aya Expanse 32B",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  c4aiAyaVision8B: {
+    title: "C4AI Aya Vision 8B",
+    description:
+      "Aya Vision is a state-of-the-art multimodal and massively multilingual large language model excelling at critical benchmarks for language, text, and image capabilities.",
+    params: {
+      model: "c4ai-aya-vision-8b",
+      contextLength: 16_000,
+      title: "C4AI Aya Vision 8B",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  c4aiAyaVision32B: {
+    title: "C4AI Aya Vision 32B",
+    description:
+      "Aya Vision is a state-of-the-art multimodal and massively multilingual large language model excelling at critical benchmarks for language, text, and image capabilities.",
+    params: {
+      model: "c4ai-aya-vision-32b",
+      contextLength: 16_000,
+      title: "C4AI Aya Vision 32B",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  commandR032024: {
+    title: "Command R 03-2024",
     description:
       "Command R is a scalable generative model targeting RAG and Tool Use to enable production-scale AI for enterprise.",
     params: {
-      model: "command-r",
+      model: "command-r-03-2024",
       contextLength: 128_000,
       title: "Command R",
       apiKey: "",
@@ -943,14 +983,84 @@ export const models: { [key: string]: ModelPackage } = {
     icon: "cohere.png",
     isOpenSource: false,
   },
-  commandRPlus: {
-    title: "Command R+",
+  commandRPlus042024: {
+    title: "Command R+ 04-2024",
     description:
-      "Command R+ is a state-of-the-art RAG-optimized model designed to tackle enterprise-grade workloads",
+      "Command R+ is a state-of-the-art RAG-optimized model designed to tackle enterprise-grade workloads.",
     params: {
-      model: "command-r-plus",
+      model: "command-r-plus-04-2024",
       contextLength: 128_000,
       title: "Command R+",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  commandR082024: {
+    title: "Command R 08-2024",
+    description:
+      "Command R is a scalable generative model targeting RAG and Tool Use to enable production-scale AI for enterprise.",
+    params: {
+      model: "command-r-08-2024",
+      contextLength: 128_000,
+      title: "Command R 08-2024",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  commandRPlus082024: {
+    title: "Command R+ 08-2024",
+    description:
+      "Command R+ is a state-of-the-art RAG-optimized model designed to tackle enterprise-grade workloads.",
+    params: {
+      model: "command-r-plus-08-2024",
+      contextLength: 128_000,
+      title: "Command R+ 08-2024",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  commandR7B122024: {
+    title: "Command R7B 12-2024",
+    description:
+      "The smallest model in our R series delivers top-tier speed, efficiency, and quality to build powerful AI applications on commodity GPUs and edge devices.",
+    params: {
+      model: "command-r7b-12-2024",
+      contextLength: 128_000,
+      title: "Command R7B 12-2024",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  commandR7BArabic022025: {
+    title: "Command R7B Arabic 02-2025",
+    description:
+      "Our state-of-the-art lightweight multilingual AI model has been optimized for advanced Arabic language capabilities to support enterprises in the MENA region.",
+    params: {
+      model: "command-r7b-arabic-02-2025",
+      contextLength: 128_000,
+      title: "Command R7B Arabic 02-2025",
+      apiKey: "",
+    },
+    providerOptions: ["cohere"],
+    icon: "cohere.png",
+    isOpenSource: false,
+  },
+  commandA032025: {
+    title: "Command A 03-2025",
+    description:
+      "Command A is Cohere’s most performant model to date, excelling at real world enterprise tasks including tool use, retrieval augmented generation (RAG), agents, and multilingual use cases.",
+    params: {
+      model: "command-a-03-2025",
+      contextLength: 256_000,
+      title: "Command A 03-2025",
       apiKey: "",
     },
     providerOptions: ["cohere"],
@@ -981,7 +1091,7 @@ export const models: { [key: string]: ModelPackage } = {
       systemMessage:
         "You are an expert software developer. You give helpful and concise responses.",
     },
-    providerOptions: ["openai", "free-trial", "askSage"],
+    providerOptions: ["openai", "askSage"],
     icon: "openai.png",
     isOpenSource: false,
   },
@@ -1009,7 +1119,7 @@ export const models: { [key: string]: ModelPackage } = {
       contextLength: 8096,
       title: "GPT-3.5-Turbo",
     },
-    providerOptions: ["openai", "free-trial", "askSage"],
+    providerOptions: ["openai", "askSage"],
     icon: "openai.png",
     isOpenSource: false,
   },
@@ -1023,7 +1133,7 @@ export const models: { [key: string]: ModelPackage } = {
       title: "Claude 3.5 Sonnet",
       apiKey: "",
     },
-    providerOptions: ["anthropic", "free-trial", "askSage"],
+    providerOptions: ["anthropic", "askSage"],
     icon: "anthropic.png",
     isOpenSource: false,
   },
@@ -1051,7 +1161,7 @@ export const models: { [key: string]: ModelPackage } = {
       title: "Claude 3 Sonnet",
       apiKey: "",
     },
-    providerOptions: ["anthropic", "free-trial", "askSage"],
+    providerOptions: ["anthropic", "askSage"],
     icon: "anthropic.png",
     isOpenSource: false,
   },
@@ -1065,7 +1175,7 @@ export const models: { [key: string]: ModelPackage } = {
       title: "Claude 3.5 Haiku",
       apiKey: "",
     },
-    providerOptions: ["anthropic", "free-trial"],
+    providerOptions: ["anthropic"],
     icon: "anthropic.png",
     isOpenSource: false,
   },
@@ -1442,7 +1552,7 @@ export const models: { [key: string]: ModelPackage } = {
       contextLength: 32_000,
     },
     icon: "qwen.png",
-    providerOptions: ["scaleway", "nebius", "ncompass"],
+    providerOptions: ["scaleway", "nebius", "ovhcloud", "ncompass"],
     isOpenSource: true,
   },
   grokBeta: {
@@ -1565,13 +1675,37 @@ export const models: { [key: string]: ModelPackage } = {
     providerOptions: ["siliconflow"],
     isOpenSource: true,
   },
+  llama4Scout: {
+    title: "Llama 4 Scout Instruct",
+    description: "A model from Meta, fine-tuned for chat",
+    params: {
+      title: "Llama 4 Scout Instruct",
+      model: "Llama-4-Scout-17B-16E-Instruct",
+      contextLength: 16_000,
+    },
+    icon: "meta.png",
+    providerOptions: ["sambanova"],
+    isOpenSource: true,
+  },
+  llama4Maverick: {
+    title: "Llama 4 Maverick Instruct",
+    description: "A model from Meta, fine-tuned for chat",
+    params: {
+      title: "Llama 4 Maverick Instruct",
+      model: "Llama-4-Maverick-17B-128E-Instruct",
+      contextLength: 16_000,
+    },
+    icon: "meta.png",
+    providerOptions: ["sambanova"],
+    isOpenSource: true,
+  },
   llama3370BInstruct: {
     title: "Llama 3.3 70B Instruct",
     description: "A model from Meta, fine-tuned for chat",
     params: {
       title: "Llama 3.3 70B instruct",
       model: "Meta-Llama-3.3-70B-Instruct",
-      contextLength: 16_000,
+      contextLength: 128_000,
     },
     icon: "meta.png",
     providerOptions: ["sambanova"],
@@ -1590,19 +1724,6 @@ export const models: { [key: string]: ModelPackage } = {
     providerOptions: ["sambanova"],
     isOpenSource: true,
   },
-  llama3170BInstruct: {
-    title: "Llama3.1 70B",
-    description: "A model from Meta, fine-tuned for chat",
-    refUrl: "",
-    params: {
-      title: "Llama 3.1 70B Instruct",
-      model: "Meta-Llama-3.1-70B-Instruct",
-      contextLength: 128_000,
-    },
-    icon: "meta.png",
-    providerOptions: ["sambanova"],
-    isOpenSource: true,
-  },
   llama31405BInstruct: {
     title: "Llama3.1 405B",
     description: "A model from Meta, fine-tuned for chat",
@@ -1613,19 +1734,6 @@ export const models: { [key: string]: ModelPackage } = {
       contextLength: 16_000,
     },
     icon: "meta.png",
-    providerOptions: ["sambanova"],
-    isOpenSource: true,
-  },
-  llama31Tulu3405B: {
-    title: "Llama3.1 Tulu 3405B",
-    description: "A model from Meta, fine-tuned for chat",
-    refUrl: "",
-    params: {
-      title: "Llama 3.1 Tulu 3 405B",
-      model: "Llama-3.1-Tulu-3-405B",
-      contextLength: 16_000,
-    },
-    icon: "allenai.png",
     providerOptions: ["sambanova"],
     isOpenSource: true,
   },
@@ -1655,65 +1763,13 @@ export const models: { [key: string]: ModelPackage } = {
     providerOptions: ["sambanova"],
     isOpenSource: true,
   },
-  llama3211BInstruct: {
-    title: "Llama3.2 11B",
-    description: "A model from Meta, fine-tuned for multimodal chat with images",
-    refUrl: "",
-    params: {
-      title: "Llama 3.2 11B Vision Instruct",
-      model: "Llama-3.2-11B-Vision-Instruct",
-      contextLength: 4096,
-    },
-    icon: "meta.png",
-    providerOptions: ["sambanova"],
-    isOpenSource: true,
-  },
-  llama3290BInstruct: {
-    title: "Llama3.2 90B",
-    description: "A model from Meta, fine-tuned for multimodal chat with images",
-    refUrl: "",
-    params: {
-      title: "Llama 3.2 90B Vision Instruct",
-      model: "Llama-3.2-90B-Vision-Instruct",
-      contextLength: 4096,
-    },
-    icon: "meta.png",
-    providerOptions: ["sambanova"],
-    isOpenSource: true,
-  },
-  qwen25Coder32BInstruct: {
-    title: "Qwen 2.5 Coder 32B",
+  qwq32B: {
+    title: "QwQ 32B",
     description:
-      "Qwen 2.5 coder is an auto-regressive language model that uses an optimized transformer architecture, fine-tuned for coding tasks.",
+      "QwQ-32B is Qwen's latest experimental research model, focusing on improving AI reasoning capabilities.",
     params: {
-      title: "Qwen2.5 Coder 32B Instruct",
-      model: "Qwen2.5-Coder-32B-Instruct",
-      contextLength: 16_000,
-    },
-    icon: "qwen.png",
-    providerOptions: ["sambanova"],
-    isOpenSource: true,
-  },
-  qwen2572BInstruct: {
-    title: "Qwen 2.5 72B",
-    description:
-      "Qwen 2.5 is an auto-regressive language model that uses an optimized transformer architecture.",
-    params: {
-      title: "Qwen2.5 72B Instruct",
-      model: "Qwen2.5-72B-Instruct",
-      contextLength: 16_000,
-    },
-    icon: "qwen.png",
-    providerOptions: ["sambanova"],
-    isOpenSource: true,
-  },
-  qwq32BPreview: {
-    title: "QwQ 32B Preview",
-    description:
-      "QwQ-32B-Preview is Qwen's latest experimental research model, focusing on improving AI reasoning capabilities.",
-    params: {
-      title: "QwQ 32B Preview",
-      model: "QwQ-32B-Preview",
+      title: "QwQ 32B",
+      model: "QwQ-32B",
       contextLength: 16_000,
     },
     icon: "qwen.png",
@@ -1722,24 +1778,34 @@ export const models: { [key: string]: ModelPackage } = {
   },
   deepseekR1DistillLlama70B: {
     title: "DeepSeek R1 Distill Llama 70B",
-    description:
-      "A llama 3.1 70 model distilled from deekseek R1",
+    description: "A llama 3.1 70 model distilled from deekseek R1",
     params: {
       title: "DeepSeek R1 Distill Llama 70B",
       model: "DeepSeek-R1-Distill-Llama-70B",
       contextLength: 32_000,
     },
     icon: "deepseek.png",
-    providerOptions: ["sambanova"],
+    providerOptions: ["ovhcloud", "sambanova"],
     isOpenSource: true,
   },
   deepseekR1: {
     title: "DeepSeek R1",
-    description:
-      "DeekSeek R1 reasoning model from DeepSeek",
+    description: "DeekSeek R1 reasoning model from DeepSeek",
     params: {
       title: "DeepSeek R1",
       model: "DeepSeek-R1",
+      contextLength: 8192,
+    },
+    icon: "deepseek.png",
+    providerOptions: ["sambanova"],
+    isOpenSource: true,
+  },
+  deepseekV3: {
+    title: "DeepSeek V3",
+    description: "DeekSeek V3 reasoning model from DeepSeek",
+    params: {
+      title: "DeepSeek V3",
+      model: "DeepSeek-V3-0324",
       contextLength: 8192,
     },
     icon: "deepseek.png",

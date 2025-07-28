@@ -7,14 +7,14 @@ import useIsOSREnabled from "../../../hooks/useIsOSREnabled";
 import useUpdatingRef from "../../../hooks/useUpdatingRef";
 import { useAppDispatch, useAppSelector } from "../../../redux/hooks";
 import { selectSelectedChatModel } from "../../../redux/slices/configSlice";
-import { selectIsInEditMode } from "../../../redux/slices/sessionSlice";
 import InputToolbar, { ToolbarOptions } from "../InputToolbar";
 import { ComboBoxItem } from "../types";
-import { DragOverlay, InputBoxDiv } from "./components";
+import { DragOverlay } from "./components/DragOverlay";
+import { InputBoxDiv } from "./components/StyledComponents";
 import { useMainEditor } from "./MainEditorProvider";
 import "./TipTapEditor.css";
-import { handleImageFile } from "./utils";
 import { createEditorConfig, getPlaceholderText } from "./utils/editorConfig";
+import { handleImageFile } from "./utils/imageUtils";
 import { useEditorEventHandlers } from "./utils/keyHandlers";
 
 export interface TipTapEditorProps {
@@ -43,13 +43,12 @@ export function TipTapEditor(props: TipTapEditorProps) {
   const mainEditorContext = useMainEditor();
 
   const ideMessenger = useContext(IdeMessengerContext);
-
   const isOSREnabled = useIsOSREnabled();
 
   const defaultModel = useAppSelector(selectSelectedChatModel);
   const isStreaming = useAppSelector((state) => state.session.isStreaming);
-  const isInEditMode = useAppSelector(selectIsInEditMode);
   const historyLength = useAppSelector((store) => store.session.history.length);
+  const isInEdit = useAppSelector((store) => store.session.isInEdit);
 
   const { editor, onEnterRef } = createEditorConfig({
     props,
@@ -82,13 +81,16 @@ export function TipTapEditor(props: TipTapEditorProps) {
   }, [editor, props.placeholder, historyLength]);
 
   useEffect(() => {
-    if (isInEditMode) {
-      setShouldHideToolbar(false);
-    }
     if (props.isMainInput) {
       editor?.commands.clearContent(true);
     }
-  }, [editor, isInEditMode, props.isMainInput]);
+  }, [editor, props.isMainInput]);
+
+  useEffect(() => {
+    if (isInEdit) {
+      setShouldHideToolbar(false);
+    }
+  }, [isInEdit]);
 
   const editorFocusedRef = useUpdatingRef(editor?.isFocused, [editor]);
 
@@ -148,7 +150,7 @@ export function TipTapEditor(props: TipTapEditorProps) {
 
   const handleBlur = useCallback(
     (e: React.FocusEvent) => {
-      if (isInEditMode) {
+      if (isInEdit) {
         return;
       }
       // Check if the new focus target is within our InputBoxDiv
@@ -163,7 +165,7 @@ export function TipTapEditor(props: TipTapEditorProps) {
         setShouldHideToolbar(true);
       }, 100);
     },
-    [isInEditMode, blurTimeout],
+    [isInEdit, blurTimeout],
   );
 
   const handleFocus = useCallback(() => {
@@ -177,7 +179,11 @@ export function TipTapEditor(props: TipTapEditorProps) {
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
       onKeyUp={handleKeyUp}
-      className={shouldHideToolbar ? "cursor-default" : "cursor-text"}
+      className={
+        !props.isMainInput && shouldHideToolbar
+          ? "cursor-pointer hover:brightness-105"
+          : "cursor-text"
+      }
       onClick={() => {
         editor?.commands.focus();
       }}
@@ -211,7 +217,7 @@ export function TipTapEditor(props: TipTapEditorProps) {
         }
         setShowDragOverMsg(false);
         let file = event.dataTransfer.files[0];
-        handleImageFile(ideMessenger, file).then((result) => {
+        void handleImageFile(ideMessenger, file).then((result) => {
           if (!editor) {
             return;
           }
@@ -243,7 +249,7 @@ export function TipTapEditor(props: TipTapEditorProps) {
           onAddContextItem={() => insertCharacterWithWhitespace("@")}
           onEnter={onEnterRef.current}
           onImageFileSelected={(file) => {
-            handleImageFile(ideMessenger, file).then((result) => {
+            void handleImageFile(ideMessenger, file).then((result) => {
               if (!editor) {
                 return;
               }

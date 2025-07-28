@@ -71,6 +71,22 @@ const qwenCoderFimTemplate: AutocompleteTemplate = {
   },
 };
 
+const seedCoderFimTemplate: AutocompleteTemplate = {
+  template:
+    "<[fim-prefix]>{{{prefix}}}<[fim-suffix]>{{{suffix}}}<[fim-middle]>",
+  completionOptions: {
+    stop: [
+      "<[end▁of▁sentence]>",
+      "<[fim-prefix]>",
+      "<[fim-middle]>",
+      "<[fim-suffix]>",
+      "<[PAD▁TOKEN]>",
+      "<[SEP▁TOKEN]>",
+      "<[begin▁of▁sentence]>",
+    ],
+  },
+};
+
 const codestralFimTemplate: AutocompleteTemplate = {
   template: "[SUFFIX]{{{suffix}}}[PREFIX]{{{prefix}}}",
   completionOptions: {
@@ -87,9 +103,10 @@ const codestralMultifileFimTemplate: AutocompleteTemplate = {
     snippets,
     workspaceUris,
   ): [string, string] => {
-
-    function getFileName(snippet: { uri: string, uniquePath: string }) {
-      return snippet.uri.startsWith("file://") ? snippet.uniquePath : snippet.uri
+    function getFileName(snippet: { uri: string; uniquePath: string }) {
+      return snippet.uri.startsWith("file://")
+        ? snippet.uniquePath
+        : snippet.uri;
     }
 
     if (snippets.length === 0) {
@@ -132,6 +149,64 @@ const codestralMultifileFimTemplate: AutocompleteTemplate = {
   },
   completionOptions: {
     stop: ["[PREFIX]", "[SUFFIX]", "\n+++++ "],
+  },
+};
+
+const mercuryMultifileFimTemplate: AutocompleteTemplate = {
+  compilePrefixSuffix: (
+    prefix,
+    suffix,
+    filepath,
+    reponame,
+    snippets,
+    workspaceUris,
+  ): [string, string] => {
+    function getFileName(snippet: { uri: string; uniquePath: string }) {
+      return snippet.uri.startsWith("file://")
+        ? snippet.uniquePath
+        : snippet.uri;
+    }
+
+    // Our current snippet format doesn't work well with mercury. We need to clean this up
+    snippets = [];
+
+    if (snippets.length === 0) {
+      if (suffix.trim().length === 0 && prefix.trim().length === 0) {
+        return [
+          `<|file_sep|>${getLastNUriRelativePathParts(workspaceUris, filepath, 2)}\n<|fim_prefix|>${prefix}`,
+          suffix,
+        ];
+      }
+      return [`<|fim_prefix|>${prefix}`, suffix];
+    }
+
+    const relativePaths = getShortestUniqueRelativeUriPaths(
+      [
+        ...snippets.map((snippet) =>
+          "filepath" in snippet ? snippet.filepath : "file:///Untitled.txt",
+        ),
+        filepath,
+      ],
+      workspaceUris,
+    );
+
+    const otherFiles = snippets
+      .map((snippet, i) => {
+        if (snippet.type === AutocompleteSnippetType.Diff) {
+          return snippet.content;
+        }
+
+        return `<|file_sep|>${getFileName(relativePaths[i])} \n${snippet.content}`;
+      })
+      .join("\n\n");
+
+    return [
+      `${otherFiles}${otherFiles ? "\n\n" : ""}<|file_sep|>${getFileName(relativePaths[relativePaths.length - 1])}\n<|fim_prefix|>${prefix}`,
+      suffix,
+    ];
+  },
+  template: (prefix: string, suffix: string): string => {
+    return `${prefix}<|fim_suffix|>${suffix}<|fim_middle|>`;
   },
 };
 
@@ -223,8 +298,9 @@ const codegeexFimTemplate: AutocompleteTemplate = {
       [...snippets.map((snippet) => snippet.filepath), filepath],
       workspaceUris,
     );
-    const baseTemplate = `###PATH:${relativePaths[relativePaths.length - 1]
-      }\n###LANGUAGE:${language}\n###MODE:BLOCK\n<|code_suffix|>${suffix}<|code_prefix|>${prefix}<|code_middle|>`;
+    const baseTemplate = `###PATH:${
+      relativePaths[relativePaths.length - 1]
+    }\n###LANGUAGE:${language}\n###MODE:BLOCK\n<|code_suffix|>${suffix}<|code_prefix|>${prefix}<|code_middle|>`;
     if (snippets.length === 0) {
       return `<|user|>\n${baseTemplate}<|assistant|>\n`;
     }
@@ -358,9 +434,16 @@ export function getTemplateForModel(model: string): AutocompleteTemplate {
   // if (lowerCaseModel.includes("starcoder2")) {
   //   return starcoder2FimTemplate;
   // }
+  if (lowerCaseModel.includes("mercury")) {
+    return mercuryMultifileFimTemplate;
+  }
 
   if (lowerCaseModel.includes("qwen") && lowerCaseModel.includes("coder")) {
     return qwenCoderFimTemplate;
+  }
+
+  if (lowerCaseModel.includes("seed") && lowerCaseModel.includes("coder")) {
+    return seedCoderFimTemplate;
   }
 
   if (

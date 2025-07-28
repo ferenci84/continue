@@ -1,9 +1,13 @@
+import { parseConfigYaml } from "@continuedev/config-yaml";
 import {
   BookmarkIcon as BookmarkOutline,
   PencilIcon,
 } from "@heroicons/react/24/outline";
 import { BookmarkIcon as BookmarkSolid } from "@heroicons/react/24/solid";
-import { SlashCommandDescription } from "core";
+import { SlashCommandDescWithSource } from "core";
+import { useContext, useMemo } from "react";
+import { useAuth } from "../../../../context/Auth";
+import { IdeMessengerContext } from "../../../../context/IdeMessenger";
 import { useBookmarkedSlashCommands } from "../../../../hooks/useBookmarkedSlashCommands";
 import { useAppSelector } from "../../../../redux/hooks";
 import { fontSize } from "../../../../util";
@@ -11,8 +15,12 @@ import { useMainEditor } from "../../TipTapEditor";
 import { useLump } from "../LumpContext";
 import { ExploreBlocksButton } from "./ExploreBlocksButton";
 
+interface PromptCommandWithSlug extends SlashCommandDescWithSource {
+  slug?: string;
+}
+
 interface PromptRowProps {
-  prompt: SlashCommandDescription;
+  prompt: PromptCommandWithSlug;
   isBookmarked: boolean;
   setIsBookmarked: (isBookmarked: boolean) => void;
   onEdit?: () => void;
@@ -32,7 +40,11 @@ function PromptRow({
 
   const handlePromptClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    mainEditor?.commands.insertPrompt(prompt);
+    mainEditor?.commands.insertPrompt({
+      title: prompt.name,
+      description: prompt.description,
+      content: prompt.prompt,
+    });
     hideLump();
   };
 
@@ -88,24 +100,64 @@ function PromptRow({
  * Section that displays all available prompts with bookmarking functionality
  */
 export function PromptsSection() {
+  const { selectedProfile } = useAuth();
   const { isCommandBookmarked, toggleBookmark } = useBookmarkedSlashCommands();
+  const ideMessenger = useContext(IdeMessengerContext);
 
   const slashCommands = useAppSelector(
     (state) => state.config.config.slashCommands ?? [],
   );
 
-  const handleEdit = (prompt: any) => {
-    // Handle edit action here
-    console.log("Editing prompt:", prompt);
+  const handleEdit = (prompt: PromptCommandWithSlug) => {
+    if (prompt.promptFile) {
+      ideMessenger.post("openFile", {
+        path: prompt.promptFile,
+      });
+    } else if (prompt.slug) {
+      void ideMessenger.request("controlPlane/openUrl", {
+        path: `${prompt.slug}/new-version`,
+        orgSlug: undefined,
+      });
+    } else {
+      ideMessenger.post("config/openProfile", {
+        profileId: undefined,
+        element: { sourceFile: (prompt as any).sourceFile },
+      });
+    }
   };
 
-  const sortedCommands = [...slashCommands].sort((a, b) => {
-    const aBookmarked = isCommandBookmarked(a.name);
-    const bBookmarked = isCommandBookmarked(b.name);
-    if (aBookmarked && !bBookmarked) return -1;
-    if (!aBookmarked && bBookmarked) return 1;
-    return 0;
-  });
+  const sortedCommands = useMemo(() => {
+    const promptsWithSlug: PromptCommandWithSlug[] =
+      structuredClone(slashCommands);
+    // get the slugs from rawYaml
+    if (selectedProfile?.rawYaml) {
+      const parsed = parseConfigYaml(selectedProfile.rawYaml);
+      const parsedPrompts = parsed.prompts ?? [];
+
+      let index = 0;
+      for (const commandWithSlug of promptsWithSlug) {
+        // skip for local prompt files
+        if (commandWithSlug.promptFile) continue;
+
+        const yamlPrompt = parsedPrompts[index];
+        if (yamlPrompt) {
+          if ("uses" in yamlPrompt) {
+            commandWithSlug.slug = yamlPrompt.uses;
+          } else {
+            commandWithSlug.slug = `${selectedProfile?.fullSlug.ownerSlug}/${selectedProfile?.fullSlug.packageSlug}`;
+          }
+        }
+        index = index + 1;
+      }
+    }
+    return promptsWithSlug.sort((a, b) => {
+      const aBookmarked = isCommandBookmarked(a.name);
+      const bBookmarked = isCommandBookmarked(b.name);
+      if (aBookmarked && !bBookmarked) return -1;
+      if (!aBookmarked && bBookmarked) return 1;
+      return 0;
+    });
+  }, [slashCommands, isCommandBookmarked, selectedProfile]);
 
   return (
     <div className="flex flex-col">

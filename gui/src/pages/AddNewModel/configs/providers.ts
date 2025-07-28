@@ -1,6 +1,5 @@
 import { HTMLInputTypeAttribute } from "react";
 import { ModelProviderTags } from "../../../components/modelSelection/utils";
-import { FREE_TRIAL_LIMIT_REQUESTS } from "../../../util/freeTrial";
 import { completionParamsInputs } from "./completionParamsInputs";
 import type { ModelPackage } from "./models";
 import { models } from "./models";
@@ -161,6 +160,40 @@ export const providers: Partial<Record<string, ProviderInfo>> = {
     packages: [models.llama31Chat, models.deepseek],
     apiKeyUrl: "https://function.network/join-waitlist",
   },
+  ovhcloud: {
+    title: "OVHcloud",
+    provider: "ovhcloud",
+    refPage: "ovhcloud",
+    description:
+      "OVHcloud AI Endpoints is a serverless inference API that provides access to a curated selection of models (e.g., Llama, Mistral, Qwen, Deepseek). It is designed with security and data privacy in mind and is compliant with GDPR.",
+    longDescription: `To get started, create an API key on the OVHcloud [AI Endpoints website](https://endpoints.ai.cloud.ovh.net/). For more information, including pricing, visit the OVHcloud [AI Endpoints product page](https://www.ovhcloud.com/en/public-cloud/ai-endpoints/).`,
+    params: {
+      apiKey: "",
+    },
+    collectInputFor: [
+      {
+        inputType: "text",
+        key: "apiKey",
+        label: "API key",
+        placeholder: "Enter your AI Endpoints API key",
+        required: true,
+      },
+      ...completionParamsInputsConfigs,
+    ],
+    icon: "ovhcloud.png",
+    tags: [ModelProviderTags.RequiresApiKey, ModelProviderTags.OpenSource],
+    packages: [
+      models.llama318bChat,
+      models.llama3170bChat,
+      models.llama3370bChat,
+      models.codestralMamba,
+      models.mistralOs,
+      models.mistralNemo,
+      models.Qwen25Coder32b,
+      models.deepseekR1DistillLlama70B,
+    ],
+    apiKeyUrl: "https://endpoints.ai.cloud.ovh.net/",
+  },
   scaleway: {
     title: "Scaleway",
     provider: "scaleway",
@@ -316,7 +349,19 @@ Select the \`GPT-4o\` model below to complete your provider configuration, but n
       },
       ...completionParamsInputsConfigs,
     ],
-    packages: [models.commandR, models.commandRPlus],
+    packages: [
+      models.commandA032025,
+      models.commandR7BArabic022025,
+      models.commandR7B122024,
+      models.commandRPlus082024,
+      models.commandR082024,
+      models.commandRPlus042024,
+      models.commandR032024,
+      models.c4aiAyaVision32B,
+      models.c4aiAyaVision8B,
+      models.c4aiAyaExpanse32B,
+      models.c4aiAyaExpanse8B,
+    ],
     apiKeyUrl: "https://docs.cohere.com/v2/docs/rate-limits",
   },
   groq: {
@@ -714,41 +759,13 @@ To get started, [register](https://dataplatform.cloud.ibm.com/registration/stepo
       models.MetaLlama3,
     ],
   },
-  "free-trial": {
-    title: "Continue limited free trial",
-    provider: "free-trial",
-    refPage: "freetrial",
-    description:
-      "New users can try out Continue for free using a proxy server that securely makes calls to OpenAI, Anthropic, or Together using our API key",
-    longDescription: `New users can try out Continue for free using a proxy server that securely makes calls to OpenAI, Anthropic, or Together using our API key. If you are ready to set up a model for long-term use or have used all ${FREE_TRIAL_LIMIT_REQUESTS} free uses, you can enter your API key or use a local model.`,
-    icon: "openai.png",
-    tags: [ModelProviderTags.Free],
-    packages: [
-      models.llama31405bTrial,
-      models.llama3170bTrial,
-      { ...models.claude35Sonnet, title: "Claude 3.5 Sonnet (trial)" },
-      { ...models.gpt4o, title: "GPT-4o (trial)" },
-      { ...models.gpt35turbo, title: "GPT-3.5-Turbo (trial)" },
-      { ...models.claude35Haiku, title: "Claude 3.5 Haiku (trial)" },
-      models.mixtralTrial,
-      { ...models.gemini15Pro, title: "Gemini 1.5 Pro (trial)" },
-      {
-        ...models.AUTODETECT,
-        params: {
-          ...models.AUTODETECT.params,
-          title: "Free Trial",
-        },
-      },
-    ],
-    collectInputFor: [...completionParamsInputsConfigs],
-  },
   sambanova: {
     title: "SambaNova",
     provider: "sambanova",
     refPage: "sambanova",
     description: "Use SambaNova Cloud for fast inference performance",
     icon: "sambanova.png",
-    longDescription: `The SambaNova Cloud is a cloud platform for running large open source AI models with the world record performance and zero data retention. You can sign up [here](https://cloud.sambanova.ai/)`,
+    longDescription: `The SambaNova Cloud is a cloud platform for running large open source AI models with the world record performance and zero data retention. You can sign up [here](http://cloud.sambanova.ai?utm_source=continue&utm_medium=external&utm_campaign=cloud_signup)`,
     tags: [ModelProviderTags.RequiresApiKey, ModelProviderTags.OpenSource],
     params: {
       apiKey: "",
@@ -763,21 +780,18 @@ To get started, [register](https://dataplatform.cloud.ibm.com/registration/stepo
       },
       ...completionParamsInputsConfigs,
     ],
-    packages:[
-      models.qwen25Coder32BInstruct,
+    packages: [
+      models.llama4Scout,
+      models.llama4Maverick,
       models.llama3370BInstruct,
       models.llama318BInstruct,
-      models.llama3170BInstruct,
       models.llama31405BInstruct,
-      models.llama31Tulu3405B,
       models.llama321BInstruct,
       models.llama323BInstruct,
-      models.llama3211BInstruct,
-      models.llama3290BInstruct,
-      models.qwen2572BInstruct,
-      models.qwq32BPreview,
+      models.qwq32B,
       models.deepseekR1DistillLlama70B,
       models.deepseekR1,
+      models.deepseekV3,
     ],
     apiKeyUrl: "https://cloud.sambanova.ai/apis",
   },
@@ -964,5 +978,23 @@ To get started, [register](https://dataplatform.cloud.ibm.com/registration/stepo
       models.Llama31Nemotron_70b,
     ],
     apiKeyUrl: "https://cloud.siliconflow.cn/account/ak",
+  },
+  venice: {
+    title: "Venice",
+    provider: "venice",
+    icon: "venice.png",
+    description: "Venice.",
+    tags: [ModelProviderTags.RequiresApiKey, ModelProviderTags.OpenSource],
+    collectInputFor: [
+      {
+        inputType: "text",
+        key: "apiKey",
+        label: "API Key",
+        placeholder: "Enter your Venice API key",
+        required: true,
+      },
+    ],
+    packages: [{ ...models.AUTODETECT }],
+    apiKeyUrl: "https://venice.ai/chat",
   },
 };

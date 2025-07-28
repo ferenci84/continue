@@ -1,17 +1,16 @@
 import { createAsyncThunk, unwrapResult } from "@reduxjs/toolkit";
 import { JSONContent } from "@tiptap/core";
 import { InputModifiers } from "core";
-import { constructMessages } from "core/llm/constructMessages";
 import posthog from "posthog-js";
 import { v4 as uuidv4 } from "uuid";
+import { resolveEditorContent } from "../../components/mainInput/TipTapEditor/utils/resolveEditorContent";
 import { selectSelectedChatModel } from "../slices/configSlice";
 import {
+  resetNextCodeBlockToApplyIndex,
   submitEditorAndInitAtIndex,
   updateHistoryItemAtIndex,
 } from "../slices/sessionSlice";
 import { ThunkApiType } from "../store";
-import { gatherContext } from "./gatherContext";
-import { resetStateForNewMessage } from "./resetStateForNewMessage";
 import { streamNormalInput } from "./streamNormalInput";
 import { streamThunkWrapper } from "./streamThunkWrapper";
 import { updateFileSymbolsFromFiles } from "./updateFileSymbols";
@@ -22,15 +21,11 @@ export const streamResponseThunk = createAsyncThunk<
     editorState: JSONContent;
     modifiers: InputModifiers;
     index?: number;
-    promptPreamble?: string;
   },
   ThunkApiType
 >(
   "chat/streamResponse",
-  async (
-    { editorState, modifiers, index, promptPreamble },
-    { dispatch, extra, getState },
-  ) => {
+  async ({ editorState, modifiers, index }, { dispatch, extra, getState }) => {
     await dispatch(
       streamThunkWrapper(async () => {
         const state = getState();
@@ -44,21 +39,34 @@ export const streamResponseThunk = createAsyncThunk<
         dispatch(
           submitEditorAndInitAtIndex({ index: inputIndex, editorState }),
         );
-        resetStateForNewMessage();
 
-        const result = await dispatch(
-          gatherContext({
-            editorState,
-            modifiers,
-            promptPreamble,
-          }),
-        );
+        dispatch(resetNextCodeBlockToApplyIndex());
+
+        const defaultContextProviders =
+          state.config.config.experimental?.defaultContext ?? [];
+
+        if (!selectedChatModel) {
+          console.error(
+            "gatherContext thunk: Cannot gather context, no model selected",
+          );
+          throw new Error("No chat model selected");
+        }
+
+        // Resolve context providers and construct new history
         const {
           selectedContextItems,
           selectedCode,
           content,
-          slashCommandWithInput,
-        } = unwrapResult(result);
+          legacyCommandWithInput,
+        } = await resolveEditorContent({
+          editorState,
+          modifiers,
+          ideMessenger: extra.ideMessenger,
+          defaultContextProviders,
+          availableSlashCommands: state.config.config.slashCommands,
+          dispatch,
+          getState,
+        });
 
         // symbols for both context items AND selected codeblocks
         const filesForSymbols = [
@@ -67,7 +75,7 @@ export const streamResponseThunk = createAsyncThunk<
             .map((item) => item.uri!.value),
           ...selectedCode.map((rif) => rif.filepath),
         ];
-        dispatch(updateFileSymbolsFromFiles(filesForSymbols));
+        void dispatch(updateFileSymbolsFromFiles(filesForSymbols));
 
         dispatch(
           updateHistoryItemAtIndex({
@@ -83,24 +91,15 @@ export const streamResponseThunk = createAsyncThunk<
           }),
         );
 
-        // Construct messages from updated history
-        const updatedHistory = getState().session.history;
-        const messages = constructMessages(
-          [...updatedHistory],
-          selectedChatModel?.baseChatSystemMessage,
-          state.config.config.rules,
-          selectedChatModel.model,
-        );
-
         posthog.capture("step run", {
           step_name: "User Input",
           params: {},
         });
         posthog.capture("userInput", {});
 
-        if (slashCommandWithInput) {
+        if (legacyCommandWithInput) {
           posthog.capture("step run", {
-            step_name: slashCommandWithInput.command.name,
+            step_name: legacyCommandWithInput.command.name,
             params: {},
           });
         }
@@ -108,13 +107,12 @@ export const streamResponseThunk = createAsyncThunk<
         unwrapResult(
           await dispatch(
             streamNormalInput({
-              messages,
-              legacySlashCommandData: slashCommandWithInput
+              legacySlashCommandData: legacyCommandWithInput
                 ? {
-                    command: slashCommandWithInput.command,
+                    command: legacyCommandWithInput.command,
                     contextItems: selectedContextItems,
                     historyIndex: inputIndex,
-                    input: slashCommandWithInput.input,
+                    input: legacyCommandWithInput.input,
                     selectedCode,
                   }
                 : undefined,

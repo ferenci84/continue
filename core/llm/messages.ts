@@ -4,27 +4,6 @@ export function messageHasToolCalls(msg: ChatMessage): boolean {
   return msg.role === "assistant" && !!msg.toolCalls;
 }
 
-export function flattenMessages(msgs: ChatMessage[]): ChatMessage[] {
-  const flattened: ChatMessage[] = [];
-
-  for (let i = 0; i < msgs.length; i++) {
-    const msg = msgs[i];
-
-    if (
-      flattened.length > 0 &&
-      flattened[flattened.length - 1].role === msg.role &&
-      !messageHasToolCalls(msg) &&
-      !messageHasToolCalls(flattened[flattened.length - 1])
-    ) {
-      flattened[flattened.length - 1].content += `\n\n${msg.content || ""}`;
-    } else {
-      flattened.push(msg);
-    }
-  }
-
-  return flattened;
-}
-
 export function messageIsEmpty(message: ChatMessage): boolean {
   if (typeof message.content === "string") {
     return message.content.trim() === "";
@@ -47,6 +26,31 @@ export function addSpaceToAnyEmptyMessages(
     }
     return message;
   });
+}
+
+export function isUserOrToolMsg(msg: ChatMessage | undefined): boolean {
+  if (!msg) {
+    return false;
+  }
+  return msg.role === "user" || msg.role === "tool";
+}
+
+export function isToolMessageForId(
+  msg: ChatMessage | undefined,
+  toolCallId: string,
+): boolean {
+  return !!msg && msg.role === "tool" && msg.toolCallId === toolCallId;
+}
+
+export function messageHasToolCallId(
+  msg: ChatMessage | undefined,
+  toolCallId: string,
+): boolean {
+  return (
+    !!msg &&
+    msg.role === "assistant" &&
+    !!msg.toolCalls?.find((call) => call.id === toolCallId)
+  );
 }
 
 export function chatMessageIsEmpty(message: ChatMessage): boolean {

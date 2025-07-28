@@ -45,26 +45,88 @@ export const completionOptionsSchema = z.object({
   temperature: z.number().optional(),
   topP: z.number().optional(),
   topK: z.number().optional(),
+  minP: z.number().optional(),
+  presencePenalty: z.number().optional(),
+  frequencyPenalty: z.number().optional(),
   stop: z.array(z.string()).optional(),
   n: z.number().optional(),
+  reasoning: z.boolean().optional(),
+  reasoningBudgetTokens: z.number().optional(),
+  promptCaching: z.boolean().optional(),
+  stream: z.boolean().optional(),
 });
 export type CompletionOptions = z.infer<typeof completionOptionsSchema>;
+
+export const embeddingTasksSchema = z.union([
+  z.literal("chunk"),
+  z.literal("query"),
+]);
+export type EmbeddingTasks = z.infer<typeof embeddingTasksSchema>;
+
+export const embeddingPrefixesSchema = z.record(
+  embeddingTasksSchema,
+  z.string(),
+);
+export type EmbeddingPrefixes = z.infer<typeof embeddingPrefixesSchema>;
+
+export const cacheBehaviorSchema = z.object({
+  cacheSystemMessage: z.boolean().optional(),
+  cacheConversation: z.boolean().optional(),
+});
+export type CacheBehavior = z.infer<typeof cacheBehaviorSchema>;
 
 export const embedOptionsSchema = z.object({
   maxChunkSize: z.number().optional(),
   maxBatchSize: z.number().optional(),
+  embeddingPrefixes: embeddingPrefixesSchema.optional(),
 });
 export type EmbedOptions = z.infer<typeof embedOptionsSchema>;
 
 export const chatOptionsSchema = z.object({
   baseSystemMessage: z.string().optional(),
+  baseAgentSystemMessage: z.string().optional(),
+  basePlanSystemMessage: z.string().optional(),
 });
 export type ChatOptions = z.infer<typeof chatOptionsSchema>;
+
+const templateSchema = z.enum([
+  "llama2",
+  "alpaca",
+  "zephyr",
+  "phi2",
+  "phind",
+  "anthropic",
+  "chatml",
+  "none",
+  "openchat",
+  "deepseek",
+  "xwin-coder",
+  "neural-chat",
+  "codellama-70b",
+  "llava",
+  "gemma",
+  "granite",
+  "llama3",
+  "codestral",
+]);
+
+export const autocompleteOptionsSchema = z.object({
+  disable: z.boolean().optional(),
+  maxPromptTokens: z.number().optional(),
+  debounceDelay: z.number().optional(),
+  modelTimeout: z.number().optional(),
+  maxSuffixPercentage: z.number().optional(),
+  prefixPercentage: z.number().optional(),
+  template: z.string().optional(),
+  onlyMyCode: z.boolean().optional(),
+});
 
 /** Prompt templates use Handlebars syntax */
 const promptTemplatesSchema = z.object({
   apply: z.string().optional(),
+  chat: templateSchema.optional(),
   edit: z.string().optional(),
+  autocomplete: z.string().optional(),
 });
 export type PromptTemplates = z.infer<typeof promptTemplatesSchema>;
 
@@ -73,9 +135,11 @@ const baseModelFields = {
   model: z.string(),
   apiKey: z.string().optional(),
   apiBase: z.string().optional(),
+  maxStopWords: z.number().optional(),
   roles: modelRolesSchema.array().optional(),
   capabilities: modelCapabilitySchema.array().optional(),
   defaultCompletionOptions: completionOptionsSchema.optional(),
+  cacheBehavior: cacheBehaviorSchema.optional(),
   requestOptions: requestOptionsSchema.optional(),
   embedOptions: embedOptionsSchema.optional(),
   chatOptions: chatOptionsSchema.optional(),
@@ -84,19 +148,22 @@ const baseModelFields = {
   env: z
     .record(z.string(), z.union([z.string(), z.boolean(), z.number()]))
     .optional(),
+  autocompleteOptions: autocompleteOptionsSchema.optional(),
 };
 
 export const modelSchema = z.union([
   z.object({
     ...baseModelFields,
     provider: z.literal("continue-proxy"),
-    apiKeyLocation: z.string(),
+    apiKeyLocation: z.string().optional(),
+    envSecretLocations: z.record(z.string(), z.string()).optional(),
     orgScopeId: z.string().nullable(),
     onPremProxyUrl: z.string().nullable(),
   }),
   z.object({
     ...baseModelFields,
     provider: z.string().refine((val) => val !== "continue-proxy"),
+    sourceFile: z.string().optional(),
   }),
 ]);
 
@@ -105,7 +172,8 @@ export const partialModelSchema = z.union([
     .object({
       ...baseModelFields,
       provider: z.literal("continue-proxy"),
-      apiKeyLocation: z.string(),
+      apiKeyLocation: z.string().optional(),
+      envSecretLocations: z.record(z.string(), z.string()).optional(),
     })
     .partial(),
   z

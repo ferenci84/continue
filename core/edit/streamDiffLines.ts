@@ -4,6 +4,7 @@ import {
   ILLM,
   Prediction,
   RuleWithSource,
+  ToolResultChatMessage,
   UserChatMessage,
 } from "../";
 import {
@@ -21,8 +22,9 @@ import { getSystemMessageWithRules } from "../llm/rules/getSystemMessageWithRule
 import { gptEditPrompt } from "../llm/templates/edit";
 import { findLast } from "../util/findLast";
 import { Telemetry } from "../util/posthog";
+import { recursiveStream } from "./recursiveStream";
 
-function constructPrompt(
+function constructEditPrompt(
   prefix: string,
   highlighted: string,
   suffix: string,
@@ -61,21 +63,21 @@ export async function* streamDiffLines({
   highlighted,
   suffix,
   llm,
+  abortController,
   input,
   language,
-  onlyOneInsertion,
   overridePrompt,
-  rules,
+  rulesToInclude,
 }: {
   prefix: string;
   highlighted: string;
   suffix: string;
   llm: ILLM;
+  abortController: AbortController;
   input: string;
   language: string | undefined;
-  onlyOneInsertion: boolean;
   overridePrompt: ChatMessage[] | undefined;
-  rules: RuleWithSource[];
+  rulesToInclude: RuleWithSource[] | undefined;
 }): AsyncGenerator<DiffLine> {
   void Telemetry.capture(
     "inlineEdit",
@@ -98,28 +100,31 @@ export async function* streamDiffLines({
     oldLines = [];
   }
 
+  // Defaults to creating an edit prompt
+  // For apply can be overridden with simply apply prompt
   let prompt =
     overridePrompt ??
-    constructPrompt(prefix, highlighted, suffix, llm, input, language);
+    constructEditPrompt(prefix, highlighted, suffix, llm, input, language);
 
-  // Rules will be included with edit prompt
+  // Rules can be included with edit prompt
   // If any rules are present this will result in using chat instead of legacy completion
-  const lastUserMessage: UserChatMessage | undefined =
-    typeof prompt === "string"
-      ? {
-          role: "user",
-          content: prompt,
-        }
-      : (findLast(prompt, (msg) => msg.role === "user") as
-          | UserChatMessage
-          | undefined);
-
-  const systemMessage = getSystemMessageWithRules({
-    currentModel: llm.model,
-    rules,
-    userMessage: lastUserMessage,
-    baseSystemMessage: undefined,
-  });
+  const systemMessage = rulesToInclude
+    ? getSystemMessageWithRules({
+        availableRules: rulesToInclude,
+        userMessage:
+          typeof prompt === "string"
+            ? ({
+                role: "user",
+                content: prompt,
+              } as UserChatMessage)
+            : (findLast(
+                prompt,
+                (msg) => msg.role === "user" || msg.role === "tool",
+              ) as UserChatMessage | ToolResultChatMessage | undefined),
+        baseSystemMessage: undefined,
+        contextItems: [],
+      }).systemMessage
+    : undefined;
 
   if (systemMessage) {
     if (typeof prompt === "string") {
@@ -153,15 +158,7 @@ export async function* streamDiffLines({
     content: highlighted,
   };
 
-  const completion =
-    typeof prompt === "string"
-      ? llm.streamComplete(prompt, new AbortController().signal, {
-          raw: true,
-          prediction,
-        })
-      : llm.streamChat(prompt, new AbortController().signal, {
-          prediction,
-        });
+  const completion = recursiveStream(llm, abortController, prompt, prediction);
 
   let lines = streamLines(completion);
 
@@ -183,13 +180,7 @@ export async function* streamDiffLines({
     diffLines = addIndentation(diffLines, indentation);
   }
 
-  let seenGreen = false;
   for await (const diffLine of diffLines) {
     yield diffLine;
-    if (diffLine.type === "new") {
-      seenGreen = true;
-    } else if (onlyOneInsertion && seenGreen && diffLine.type === "same") {
-      break;
-    }
   }
 }

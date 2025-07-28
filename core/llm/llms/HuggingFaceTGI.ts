@@ -1,6 +1,6 @@
+import { streamSse } from "@continuedev/fetch";
 import { CompletionOptions, LLMOptions } from "../../index.js";
 import { BaseLLM } from "../index.js";
-import { streamSse } from "../stream.js";
 
 class HuggingFaceTGI extends BaseLLM {
   private static MAX_STOP_TOKENS = 4;
@@ -14,18 +14,22 @@ class HuggingFaceTGI extends BaseLLM {
 
     this.fetch(new URL("info", this.apiBase), {
       method: "GET",
-    }).then(async (response) => {
-      if (response.status !== 200) {
-        console.warn(
-          "Error calling Hugging Face TGI /info endpoint: ",
-          await response.text(),
-        );
-        return;
-      }
-      const json = await response.json();
-      this.model = json.model_id;
-      this.contextLength = Number.parseInt(json.max_input_length);
-    });
+    })
+      .then(async (response) => {
+        if (response.status !== 200) {
+          console.warn(
+            "Error calling Hugging Face TGI /info endpoint: ",
+            await response.text(),
+          );
+          return;
+        }
+        const json = await response.json();
+        this.model = json.model_id;
+        this._contextLength = Number.parseInt(json.max_input_length);
+      })
+      .catch((e) => {
+        console.log(`Failed to list models for HuggingFace TGI: ${e.message}`);
+      });
   }
 
   private _convertArgs(options: CompletionOptions, prompt: string) {

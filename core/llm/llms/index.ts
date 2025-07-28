@@ -1,3 +1,4 @@
+import Handlebars from "handlebars";
 import {
   BaseCompletionOptions,
   IdeSettings,
@@ -9,7 +10,6 @@ import {
 import { renderTemplatedString } from "../../promptFiles/v1/renderTemplatedString";
 import { DEFAULT_CHAT_SYSTEM_MESSAGE } from "../constructMessages";
 import { BaseLLM } from "../index";
-
 import Anthropic from "./Anthropic";
 import Asksage from "./Asksage";
 import Azure from "./Azure";
@@ -23,7 +23,6 @@ import Deepseek from "./Deepseek";
 import Docker from "./Docker";
 import Fireworks from "./Fireworks";
 import Flowise from "./Flowise";
-import FreeTrial from "./FreeTrial";
 import FunctionNetwork from "./FunctionNetwork";
 import Gemini from "./Gemini";
 import Groq from "./Groq";
@@ -34,6 +33,7 @@ import Inception from "./Inception";
 import Kindo from "./Kindo";
 import LlamaCpp from "./LlamaCpp";
 import Llamafile from "./Llamafile";
+import LlamaStack from "./LlamaStack";
 import LMStudio from "./LMStudio";
 import Mistral from "./Mistral";
 import MockLLM from "./Mock";
@@ -46,6 +46,7 @@ import Nvidia from "./Nvidia";
 import Ollama from "./Ollama";
 import OpenAI from "./OpenAI";
 import OpenRouter from "./OpenRouter";
+import OVHcloud from "./OVHcloud";
 import { Relace } from "./Relace";
 import Replicate from "./Replicate";
 import SageMaker from "./SageMaker";
@@ -56,16 +57,15 @@ import ContinueProxy from "./stubs/ContinueProxy";
 import TestLLM from "./Test";
 import TextGenWebUI from "./TextGenWebUI";
 import Together from "./Together";
+import Venice from "./Venice";
 import VertexAI from "./VertexAI";
 import Vllm from "./Vllm";
 import Voyage from "./Voyage";
 import WatsonX from "./WatsonX";
 import xAI from "./xAI";
-
 export const LLMClasses = [
   Anthropic,
   Cohere,
-  FreeTrial,
   FunctionNetwork,
   Gemini,
   Llamafile,
@@ -81,6 +81,7 @@ export const LLMClasses = [
   Kindo,
   LlamaCpp,
   OpenAI,
+  OVHcloud,
   LMStudio,
   Mistral,
   Bedrock,
@@ -107,6 +108,7 @@ export const LLMClasses = [
   Cerebras,
   Asksage,
   Nebius,
+  Venice,
   VertexAI,
   xAI,
   SiliconFlow,
@@ -114,11 +116,13 @@ export const LLMClasses = [
   Relace,
   Inception,
   Voyage,
+  LlamaStack,
 ];
 
 export async function llmFromDescription(
   desc: JSONModelDescription,
   readFile: (filepath: string) => Promise<string>,
+  getUriFromPath: (path: string) => Promise<string | undefined>,
   uniqueId: string,
   ideSettings: IdeSettings,
   llmLogger: ILLMLogger,
@@ -140,9 +144,12 @@ export async function llmFromDescription(
     baseChatSystemMessage = typeof desc.chatOptions?.baseSystemMessage === "string" ? desc.chatOptions.baseSystemMessage : DEFAULT_CHAT_SYSTEM_MESSAGE;
     baseChatSystemMessage += desc.chatOptions?.baseSystemMessage === "" ? "" : "\n\n";
     baseChatSystemMessage += await renderTemplatedString(
+      Handlebars,
       desc.systemMessage,
-      readFile,
       {},
+      [],
+      readFile,
+      getUriFromPath,
     );
   }
 
@@ -156,6 +163,8 @@ export async function llmFromDescription(
         cls.defaultOptions?.completionOptions?.maxTokens,
     },
     baseChatSystemMessage,
+    basePlanSystemMessage: baseChatSystemMessage,
+    baseAgentSystemMessage: baseChatSystemMessage,
     logger: llmLogger,
     uniqueId,
   };

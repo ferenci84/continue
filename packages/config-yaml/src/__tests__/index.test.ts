@@ -2,7 +2,8 @@ import * as fs from "fs";
 import {
   decodeSecretLocation,
   FQSN,
-  FullSlug,
+  PackageIdentifier,
+  packageIdentifierToShorthandSlug,
   PlatformClient,
   PlatformSecretStore,
   Registry,
@@ -90,18 +91,24 @@ describe("E2E Scenarios", () => {
   };
 
   const registry: Registry = {
-    getContent: async function (fullSlug: FullSlug): Promise<string> {
+    getContent: async function (id: PackageIdentifier): Promise<string> {
+      const slug = packageIdentifierToShorthandSlug(id);
       return fs
-        .readFileSync(
-          `./src/__tests__/packages/${fullSlug.ownerSlug}/${fullSlug.packageSlug}.yaml`,
-        )
+        .readFileSync(`./src/__tests__/packages/${slug}.yaml`)
         .toString();
     },
   };
 
   it("should unroll assistant with a single block that doesn't exist", async () => {
     const unrolledConfig = await unrollAssistant(
-      "test-org/assistant-with-non-existing-block",
+      {
+        uriType: "slug",
+        fullSlug: {
+          ownerSlug: "test-org",
+          packageSlug: "assistant-with-non-existing-block",
+          versionSlug: "latest",
+        },
+      },
       registry,
       {
         renderSecrets: true,
@@ -112,12 +119,19 @@ describe("E2E Scenarios", () => {
       },
     );
 
-    expect(unrolledConfig.rules?.[0]).toBeNull();
+    expect(unrolledConfig.config?.rules?.[0]).toBeNull();
   });
 
   it("should correctly unroll assistant", async () => {
     const unrolledConfig = await unrollAssistant(
-      "test-org/assistant",
+      {
+        uriType: "slug",
+        fullSlug: {
+          ownerSlug: "test-org",
+          packageSlug: "assistant",
+          versionSlug: "latest",
+        },
+      },
       registry,
       {
         renderSecrets: true,
@@ -128,19 +142,21 @@ describe("E2E Scenarios", () => {
       },
     );
 
-    // Test that packages were correctly unrolled and params replaced
-    expect(unrolledConfig.models?.length).toBe(3);
+    const config = unrolledConfig.config;
 
-    const openAiModel = unrolledConfig.models?.[0]!;
+    // Test that packages were correctly unrolled and params replaced
+    expect(config?.models?.length).toBe(4);
+
+    const openAiModel = config?.models?.[0]!;
     expect(openAiModel.apiKey).toBe("sk-123");
 
-    const geminiModel = unrolledConfig.models?.[1]!;
+    const geminiModel = config?.models?.[1]!;
     expect(geminiModel.provider).toBe("continue-proxy");
     expect(geminiModel.apiKey).toBeUndefined();
     const geminiSecretLocation = "organization:test-org/GEMINI_API_KEY";
     expect((geminiModel as any).apiKeyLocation).toBe(geminiSecretLocation);
 
-    const anthropicModel = unrolledConfig.models?.[2]!;
+    const anthropicModel = config?.models?.[2]!;
     expect(anthropicModel.provider).toBe("continue-proxy");
     expect(anthropicModel.apiKey).toBeUndefined();
     const anthropicSecretLocation =
@@ -149,11 +165,15 @@ describe("E2E Scenarios", () => {
       anthropicSecretLocation,
     );
 
-    expect(unrolledConfig.rules?.length).toBe(2);
-    expect(unrolledConfig.docs?.[0]?.startUrl).toBe(
+    const proxyOllamaModel = config?.models?.[3]!;
+    expect(proxyOllamaModel.provider).toBe("ollama");
+    expect(proxyOllamaModel.defaultCompletionOptions?.stream).toBe(false);
+
+    expect(config?.rules?.length).toBe(2);
+    expect(config?.docs?.[0]?.startUrl).toBe(
       "https://docs.python.org/release/3.13.1",
     );
-    expect(unrolledConfig.docs?.[0]?.rootUrl).toBe(
+    expect(config?.docs?.[0]?.rootUrl).toBe(
       "https://docs.python.org/release/3.13.1",
     );
 
@@ -195,7 +215,14 @@ describe("E2E Scenarios", () => {
 
   it("should correctly unroll assistant with injected blocks", async () => {
     const unrolledConfig = await unrollAssistant(
-      "test-org/assistant",
+      {
+        uriType: "slug",
+        fullSlug: {
+          ownerSlug: "test-org",
+          packageSlug: "assistant",
+          versionSlug: "latest",
+        },
+      },
       registry,
       {
         renderSecrets: true,
@@ -206,26 +233,29 @@ describe("E2E Scenarios", () => {
         // Add an injected block
         injectBlocks: [
           {
-            ownerSlug: "test-org",
-            packageSlug: "docs",
-            versionSlug: "latest",
+            uriType: "slug",
+            fullSlug: {
+              ownerSlug: "test-org",
+              packageSlug: "rules",
+              versionSlug: "latest",
+            },
           },
         ],
       },
     );
 
-    // The original docs array should have one item
-    expect(unrolledConfig.docs?.length).toBe(2); // Now 2 with the injected block
+    const config = unrolledConfig.config;
+
+    // The original rules array should have two items
+    expect(config?.rules?.length).toBe(3); // Now 3 with the injected block
 
     // Check the original doc is still there
-    expect(unrolledConfig.docs?.[0]?.startUrl).toBe(
+    expect(config?.docs?.[0]?.startUrl).toBe(
       "https://docs.python.org/release/3.13.1",
     );
 
     // Check the injected doc block was added
-    expect(unrolledConfig.docs?.[1]?.startUrl).toBe(
-      "https://docs.python.org/release/3.13.1",
-    );
+    expect(config?.rules?.[2]).toBe("Be kind");
   });
 
   it.skip("should prioritize org over user / package secrets", () => {});

@@ -42,7 +42,7 @@ export const CodeBlockPreview = ({
       });
     } else if (item.id.providerTitle === "code") {
       const rif = ctxItemToRifWithContents(item, true);
-      ideMessenger.ide.showLines(
+      void ideMessenger.ide.showLines(
         rif.filepath,
         rif.range.start.line,
         rif.range.end.line,
@@ -67,9 +67,11 @@ export const CodeBlockPreview = ({
         borderColor={selected ? vscBadgeBackground : undefined}
         onTitleClick={handleTitleClick}
       >
-        <StyledMarkdownPreview
-          source={`${fence}${getMarkdownLanguageTagForFile(item.name)} ${item.description}\n${content}\n${fence}`}
-        />
+        {!content ? null : (
+          <StyledMarkdownPreview
+            source={`${fence}${getMarkdownLanguageTagForFile(item.name)} ${item.description}\n${content}\n${fence}`}
+          />
+        )}
       </ExpandableToolbarPreview>
     </NodeViewWrapper>
   );

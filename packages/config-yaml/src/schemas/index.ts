@@ -1,7 +1,11 @@
 import * as z from "zod";
 import { commonModelSlugs } from "./commonSlugs.js";
 import { dataSchema } from "./data/index.js";
-import { modelSchema, partialModelSchema } from "./models.js";
+import {
+  modelSchema,
+  partialModelSchema,
+  requestOptionsSchema,
+} from "./models.js";
 
 export const contextSchema = z.object({
   name: z.string().optional(),
@@ -9,12 +13,19 @@ export const contextSchema = z.object({
   params: z.any().optional(),
 });
 
+// TODO: This should be a discriminated union by type
 const mcpServerSchema = z.object({
   name: z.string(),
-  command: z.string(),
+  command: z.string().optional(),
+  type: z.enum(["sse", "stdio", "streamable-http"]).optional(),
+  url: z.string().optional(),
   faviconUrl: z.string().optional(),
   args: z.array(z.string()).optional(),
   env: z.record(z.string()).optional(),
+  cwd: z.string().optional(),
+  connectionTimeout: z.number().gt(0).optional(),
+  requestOptions: requestOptionsSchema.optional(),
+  sourceFile: z.string().optional(),
 });
 
 export type MCPServer = z.infer<typeof mcpServerSchema>;
@@ -23,6 +34,7 @@ const promptSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   prompt: z.string(),
+  sourceFile: z.string().optional(),
 });
 
 export type Prompt = z.infer<typeof promptSchema>;
@@ -32,6 +44,8 @@ const docSchema = z.object({
   startUrl: z.string(),
   rootUrl: z.string().optional(),
   faviconUrl: z.string().optional(),
+  useLocalCrawling: z.boolean().optional(),
+  sourceFile: z.string().optional(),
 });
 
 export type DocsConfig = z.infer<typeof docSchema>;
@@ -39,12 +53,31 @@ export type DocsConfig = z.infer<typeof docSchema>;
 const ruleObjectSchema = z.object({
   name: z.string(),
   rule: z.string(),
-  if: z.string().optional(),
+  description: z.string().optional(),
+  globs: z.union([z.string(), z.array(z.string())]).optional(),
+  regex: z.union([z.string(), z.array(z.string())]).optional(),
+  alwaysApply: z.boolean().optional(),
+  sourceFile: z.string().optional(), //TODO refactor RuleWithSource.ruleFile to align with sourceFile
 });
-
 const ruleSchema = z.union([z.string(), ruleObjectSchema]);
 
+/**
+ * A schema for rules.json files
+ */
+export const rulesJsonSchema = z.object({
+  name: z.string(),
+  version: z.string(),
+  author: z.string().optional(),
+  license: z.string().optional(),
+  rules: z.record(z.string(), z.string()).optional(),
+});
+
 export type Rule = z.infer<typeof ruleSchema>;
+export type RuleObject = z.infer<typeof ruleObjectSchema>;
+/**
+ * A schema for rules.json files
+ */
+export type RulesJson = z.infer<typeof rulesJsonSchema>;
 
 const defaultUsesSchema = z.string();
 
@@ -168,3 +201,59 @@ export const blockSchema = baseConfigYamlSchema.and(
 );
 
 export type Block = z.infer<typeof blockSchema>;
+
+export const continueCommandSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  prompt: z.string(),
+  placeholders: z.array(z.string()).optional(),
+  context: z.string().optional(),
+  contextWindowSize: z.number().optional(),
+  model: z.string().optional(),
+  systemMessage: z.string().optional(),
+  slashCommand: z.string().optional(),
+  hideFromCommandPalette: z.boolean().optional(),
+  hideFromSlashCommands: z.boolean().optional(),
+  mode: z.enum(["insert", "replace", "diff"]).optional(),
+  addEnhancedContext: z.boolean().optional(),
+});
+
+export const languageMarkerSchema = z.object({
+  language: z.string(),
+  markers: z.array(z.string()),
+});
+
+export const sidebarSchema = z.object({
+  enabled: z.boolean().optional(),
+  defaultOpen: z.boolean().optional(),
+  defaultWidth: z.number().optional(),
+  showButtonsThreshold: z.number().optional(),
+});
+
+const toolSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  defaultIcon: z.string().optional(),
+});
+
+export const autoindentExtensionsSchema = z.array(z.string());
+
+export const configSchema = z.object({
+  models: z.array(modelSchema).optional(),
+  defaultModel: z.string().optional(),
+  defaultRecentMessages: z.number().optional(),
+  commands: z.array(continueCommandSchema).optional(),
+  tools: z.array(toolSchema).optional(),
+  contextProviders: z.array(z.any()).optional(),
+  langMarkers: z.array(languageMarkerSchema).optional(),
+  sidebar: sidebarSchema.optional(),
+  tabAutocompleteModel: z.string().optional(),
+  rules: z.array(ruleObjectSchema).optional(),
+  doneWithBannerForever: z.boolean().optional(),
+  autoindentExtensions: autoindentExtensionsSchema.optional(),
+  proxy: z.string().optional(),
+  api_base: z.string().optional(),
+  api_key: z.string().optional(),
+});
+
+export type Config = z.infer<typeof configSchema>;

@@ -1,20 +1,19 @@
-import fs from "node:fs";
-
 import {
   AssistantUnrolled,
+  BLOCK_TYPES,
   ConfigResult,
   ConfigValidationError,
-  FQSN,
   isAssistantUnrolledNonNullable,
   MCPServer,
   ModelRole,
-  PlatformClient,
+  PackageIdentifier,
   RegistryClient,
   Rule,
-  SecretResult,
-  unrollAssistantFromContent,
+  TEMPLATE_VAR_REGEX,
+  unrollAssistant,
   validateConfigYaml,
 } from "@continuedev/config-yaml";
+import { dirname } from "node:path";
 
 import {
   ContinueConfig,
@@ -26,41 +25,24 @@ import {
   ILLMLogger,
   RuleWithSource,
 } from "../..";
-import { slashFromCustomCommand } from "../../commands";
-import { MCPManagerSingleton } from "../../context/mcp";
-import CodebaseContextProvider from "../../context/providers/CodebaseContextProvider";
+import { MCPManagerSingleton } from "../../context/mcp/MCPManagerSingleton";
 import DocsContextProvider from "../../context/providers/DocsContextProvider";
 import FileContextProvider from "../../context/providers/FileContextProvider";
 import { contextProviderClassFromName } from "../../context/providers/index";
 import { ControlPlaneClient } from "../../control-plane/client";
-import FreeTrial from "../../llm/llms/FreeTrial";
 import TransformersJsEmbeddingsProvider from "../../llm/llms/TransformersJsEmbeddingsProvider";
-import { slashCommandFromPromptFileV1 } from "../../promptFiles/v1/slashCommandFromPromptFile";
-import { getAllPromptFiles } from "../../promptFiles/v2/getPromptFiles";
-import { allTools } from "../../tools";
+import { getAllPromptFiles } from "../../promptFiles/getPromptFiles";
 import { GlobalContext } from "../../util/GlobalContext";
-import { getConfigYamlPath } from "../../util/paths";
-import { PlatformConfigMetadata } from "../profile/PlatformProfileLoader";
 import { modifyAnyConfigWithSharedConfig } from "../sharedConfig";
 
+import { convertPromptBlockToSlashCommand } from "../../commands/slash/promptBlockSlashCommand";
+import { slashCommandFromPromptFile } from "../../commands/slash/promptFileSlashCommand";
 import { getControlPlaneEnvSync } from "../../control-plane/env";
+import { getToolsForIde } from "../../tools";
+import { getCleanUriPath } from "../../util/uri";
+import { getAllDotContinueDefinitionFiles } from "../loadLocalAssistants";
+import { LocalPlatformClient } from "./LocalPlatformClient";
 import { llmsFromModelConfig } from "./models";
-
-export class LocalPlatformClient implements PlatformClient {
-  constructor(
-    private orgScopeId: string | null,
-    private readonly client: ControlPlaneClient,
-  ) {}
-
-  async resolveFQSNs(fqsns: FQSN[]): Promise<(SecretResult | undefined)[]> {
-    if (fqsns.length === 0) {
-      return [];
-    }
-
-    const response = await this.client.resolveFQSNs(fqsns, this.orgScopeId);
-    return response;
-  }
-}
 
 function convertYamlRuleToContinueRule(rule: Rule): RuleWithSource {
   if (typeof rule === "string") {
@@ -72,8 +54,10 @@ function convertYamlRuleToContinueRule(rule: Rule): RuleWithSource {
     return {
       source: "rules-block",
       rule: rule.rule,
-      if: rule.if,
+      globs: rule.globs,
       name: rule.name,
+      ruleFile: rule.sourceFile,
+      alwaysApply: rule.alwaysApply,
     };
   }
 }
@@ -87,50 +71,92 @@ function convertYamlMcpToContinueMcp(
       command: server.command,
       args: server.args ?? [],
       env: server.env,
-    },
+      cwd: server.cwd,
+    } as any, // TODO: Fix the mcpServers types in config-yaml (discriminated union)
+    timeout: server.connectionTimeout,
   };
 }
 
-async function loadConfigYaml(
-  rawYaml: string,
-  overrideConfigYaml: AssistantUnrolled | undefined,
-  controlPlaneClient: ControlPlaneClient,
-  orgScopeId: string | null,
-  ideSettings: IdeSettings,
-): Promise<ConfigResult<AssistantUnrolled>> {
-  let config =
-    overrideConfigYaml ??
+async function loadConfigYaml(options: {
+  overrideConfigYaml: AssistantUnrolled | undefined;
+  controlPlaneClient: ControlPlaneClient;
+  orgScopeId: string | null;
+  ideSettings: IdeSettings;
+  ide: IDE;
+  packageIdentifier: PackageIdentifier;
+}): Promise<ConfigResult<AssistantUnrolled>> {
+  const {
+    overrideConfigYaml,
+    controlPlaneClient,
+    orgScopeId,
+    ideSettings,
+    ide,
+    packageIdentifier,
+  } = options;
+
+  // Add local .continue blocks
+  const allLocalBlocks: PackageIdentifier[] = [];
+  for (const blockType of BLOCK_TYPES) {
+    const localBlocks = await getAllDotContinueDefinitionFiles(
+      ide,
+      { includeGlobal: true, includeWorkspace: true, fileExtType: "yaml" },
+      blockType,
+    );
+    allLocalBlocks.push(
+      ...localBlocks.map((b) => ({
+        uriType: "file" as const,
+        filePath: b.path,
+      })),
+    );
+  }
+
+  const rootPath =
+    packageIdentifier.uriType === "file"
+      ? dirname(getCleanUriPath(packageIdentifier.filePath))
+      : undefined;
+
+  // logger.info(
+  //   `Loading config.yaml from ${JSON.stringify(packageIdentifier)} with root path ${rootPath}`,
+  // );
+
+  const errors: ConfigValidationError[] = [];
+
+  let config: AssistantUnrolled | undefined;
+
+  if (overrideConfigYaml) {
+    config = overrideConfigYaml;
+  } else {
     // This is how we allow use of blocks locally
-    (await unrollAssistantFromContent(
+    const unrollResult = await unrollAssistant(
+      packageIdentifier,
+      new RegistryClient({
+        accessToken: await controlPlaneClient.getAccessToken(),
+        apiBase: getControlPlaneEnvSync(ideSettings.continueTestEnvironment)
+          .CONTROL_PLANE_URL,
+        rootPath,
+      }),
       {
-        ownerSlug: "",
-        packageSlug: "",
-        versionSlug: "",
-      },
-      rawYaml,
-      new RegistryClient(
-        await controlPlaneClient.getAccessToken(),
-        getControlPlaneEnvSync(
-          ideSettings.continueTestEnvironment,
-        ).CONTROL_PLANE_URL,
-      ),
-      {
+        renderSecrets: true,
         currentUserSlug: "",
         onPremProxyUrl: null,
         orgScopeId,
-        platformClient: new LocalPlatformClient(orgScopeId, controlPlaneClient),
-        renderSecrets: true,
+        platformClient: new LocalPlatformClient(
+          orgScopeId,
+          controlPlaneClient,
+          ide,
+        ),
+        injectBlocks: allLocalBlocks,
       },
-    ));
+    );
+    config = unrollResult.config;
+    if (unrollResult.errors) {
+      errors.push(...unrollResult.errors);
+    }
+  }
 
-  const errors = isAssistantUnrolledNonNullable(config)
-    ? validateConfigYaml(config)
-    : [
-        {
-          fatal: true,
-          message: "Assistant includes blocks that don't exist",
-        },
-      ];
+  if (config && isAssistantUnrolledNonNullable(config)) {
+    errors.push(...validateConfigYaml(config));
+  }
 
   if (errors?.some((error) => error.fatal)) {
     return {
@@ -148,30 +174,22 @@ async function loadConfigYaml(
   };
 }
 
-async function configYamlToContinueConfig({
-  config,
-  ide,
-  ideSettings,
-  ideInfo,
-  uniqueId,
-  llmLogger,
-  platformConfigMetadata,
-  allowFreeTrial = true,
-}: {
+async function configYamlToContinueConfig(options: {
   config: AssistantUnrolled;
   ide: IDE;
   ideSettings: IdeSettings;
   ideInfo: IdeInfo;
   uniqueId: string;
   llmLogger: ILLMLogger;
-  platformConfigMetadata: PlatformConfigMetadata | undefined;
-  allowFreeTrial: boolean;
+  workOsAccessToken: string | undefined;
 }): Promise<{ config: ContinueConfig; errors: ConfigValidationError[] }> {
+  let { config, ide, ideSettings, ideInfo, uniqueId, llmLogger } = options;
+
   const localErrors: ConfigValidationError[] = [];
 
   const continueConfig: ContinueConfig = {
     slashCommands: [],
-    tools: [...allTools],
+    tools: await getToolsForIde(ide),
     mcpServerStatuses: [],
     contextProviders: [],
     modelsByRole: {
@@ -201,7 +219,8 @@ async function configYamlToContinueConfig({
       config: continueConfig,
       errors: [
         {
-          message: "Found missing blocks in config.yaml",
+          message:
+            "Failed to load config due to missing blocks, see which blocks are missing below",
           fatal: true,
         },
       ],
@@ -218,7 +237,24 @@ async function configYamlToContinueConfig({
     startUrl: doc.startUrl,
     rootUrl: doc.rootUrl,
     faviconUrl: doc.faviconUrl,
+    useLocalCrawling: doc.useLocalCrawling,
+    sourceFile: doc.sourceFile,
   }));
+
+  config.mcpServers?.forEach((mcpServer) => {
+    const mcpArgVariables =
+      mcpServer.args?.filter((arg) => TEMPLATE_VAR_REGEX.test(arg)) ?? [];
+
+    if (mcpArgVariables.length === 0) {
+      return;
+    }
+
+    localErrors.push({
+      fatal: false,
+      message: `MCP server "${mcpServer.name}" has unsubstituted variables in args: ${mcpArgVariables.join(", ")}. Please refer to https://docs.continue.dev/hub/secrets/secret-types for managing hub secrets.`,
+    });
+  });
+
   continueConfig.experimental = {
     modelContextProtocolServers: config.mcpServers?.map(
       convertYamlMcpToContinueMcp,
@@ -231,7 +267,7 @@ async function configYamlToContinueConfig({
 
     promptFiles.forEach((file) => {
       try {
-        const slashCommand = slashCommandFromPromptFileV1(
+        const slashCommand = slashCommandFromPromptFile(
           file.path,
           file.content,
         );
@@ -254,7 +290,7 @@ async function configYamlToContinueConfig({
 
   config.prompts?.forEach((prompt) => {
     try {
-      const slashCommand = slashFromCustomCommand(prompt);
+      const slashCommand = convertPromptBlockToSlashCommand(prompt);
       continueConfig.slashCommands?.push(slashCommand);
     } catch (e) {
       localErrors.push({
@@ -265,9 +301,14 @@ async function configYamlToContinueConfig({
   });
 
   // Models
+  let warnAboutFreeTrial = false;
   const defaultModelRoles: ModelRole[] = ["chat", "summarize", "apply", "edit"];
   for (const model of config.models ?? []) {
     model.roles = model.roles ?? defaultModelRoles; // Default to all 4 chat-esque roles if not specified
+
+    if (model.provider === "free-trial") {
+      warnAboutFreeTrial = true;
+    }
     try {
       const llms = await llmsFromModelConfig({
         model,
@@ -275,7 +316,6 @@ async function configYamlToContinueConfig({
         uniqueId,
         ideSettings,
         llmLogger,
-        platformConfigMetadata,
         config: continueConfig,
       });
 
@@ -340,44 +380,16 @@ async function configYamlToContinueConfig({
     );
   }
 
-  if (allowFreeTrial) {
-    // Obtain auth token (iff free trial being used)
-    const freeTrialModels = continueConfig.modelsByRole.chat.filter(
-      (model) => model.providerName === "free-trial",
-    );
-    if (freeTrialModels.length > 0) {
-      try {
-        const ghAuthToken = await ide.getGitHubAuthToken({});
-        for (const model of freeTrialModels) {
-          (model as FreeTrial).setupGhAuthToken(ghAuthToken);
-        }
-      } catch (e) {
-        localErrors.push({
-          fatal: false,
-          message: `Failed to obtain GitHub auth token for free trial:\n${e instanceof Error ? e.message : e}`,
-        });
-        // Remove free trial models
-        continueConfig.modelsByRole.chat =
-          continueConfig.modelsByRole.chat.filter(
-            (model) => model.providerName !== "free-trial",
-          );
-      }
-    }
-  } else {
-    // Remove free trial models
-    continueConfig.modelsByRole.chat = continueConfig.modelsByRole.chat.filter(
-      (model) => model.providerName !== "free-trial",
-    );
+  if (warnAboutFreeTrial) {
+    localErrors.push({
+      fatal: false,
+      message:
+        "Model provider 'free-trial' is no longer supported, will be ignored.",
+    });
   }
 
   // Context providers
-  const codebaseContextParams: IContextProvider[] =
-    (config.context || []).find((cp) => cp.provider === "codebase")?.params ||
-    {};
-  const DEFAULT_CONTEXT_PROVIDERS = [
-    new FileContextProvider({}),
-    new CodebaseContextProvider(codebaseContextParams),
-  ];
+  const DEFAULT_CONTEXT_PROVIDERS = [new FileContextProvider({})];
 
   const DEFAULT_CONTEXT_PROVIDERS_TITLES = DEFAULT_CONTEXT_PROVIDERS.map(
     ({ description: { title } }) => title,
@@ -419,11 +431,13 @@ async function configYamlToContinueConfig({
     (config.mcpServers ?? []).map((server) => ({
       id: server.name,
       name: server.name,
+      sourceFile: server.sourceFile,
       transport: {
         type: "stdio",
         args: [],
-        ...server,
+        ...(server as any), // TODO: fix the types on mcpServers in config-yaml
       },
+      timeout: server.connectionTimeout,
     })),
     false,
   );
@@ -431,44 +445,39 @@ async function configYamlToContinueConfig({
   return { config: continueConfig, errors: localErrors };
 }
 
-export async function loadContinueConfigFromYaml({
-  ide,
-  ideSettings,
-  ideInfo,
-  uniqueId,
-  llmLogger,
-  overrideConfigYaml,
-  platformConfigMetadata,
-  controlPlaneClient,
-  configYamlPath,
-  orgScopeId,
-}: {
+export async function loadContinueConfigFromYaml(options: {
   ide: IDE;
   ideSettings: IdeSettings;
   ideInfo: IdeInfo;
   uniqueId: string;
   llmLogger: ILLMLogger;
+  workOsAccessToken: string | undefined;
   overrideConfigYaml: AssistantUnrolled | undefined;
-  platformConfigMetadata: PlatformConfigMetadata | undefined;
   controlPlaneClient: ControlPlaneClient;
-  configYamlPath: string | undefined;
   orgScopeId: string | null;
+  packageIdentifier: PackageIdentifier;
 }): Promise<ConfigResult<ContinueConfig>> {
-  const rawYaml =
-    overrideConfigYaml === undefined
-      ? fs.readFileSync(
-          configYamlPath ?? getConfigYamlPath(ideInfo.ideType),
-          "utf-8",
-        )
-      : "";
+  const {
+    ide,
+    ideSettings,
+    ideInfo,
+    uniqueId,
+    llmLogger,
+    workOsAccessToken,
+    overrideConfigYaml,
+    controlPlaneClient,
+    orgScopeId,
+    packageIdentifier,
+  } = options;
 
-  const configYamlResult = await loadConfigYaml(
-    rawYaml,
+  const configYamlResult = await loadConfigYaml({
     overrideConfigYaml,
     controlPlaneClient,
     orgScopeId,
     ideSettings,
-  );
+    ide,
+    packageIdentifier,
+  });
 
   if (!configYamlResult.config || configYamlResult.configLoadInterrupted) {
     return {
@@ -486,8 +495,7 @@ export async function loadContinueConfigFromYaml({
       ideInfo,
       uniqueId,
       llmLogger,
-      platformConfigMetadata,
-      allowFreeTrial: true,
+      workOsAccessToken,
     });
 
   // Apply shared config

@@ -8,10 +8,12 @@ export const grepSearchTool: Tool = {
   isCurrently: 'getting search results for "{{{ query }}}"',
   hasAlready: 'retrieved search results for "{{{ query }}}"',
   readonly: true,
+  isInstant: true,
   group: BUILT_IN_GROUP_NAME,
   function: {
     name: BuiltInToolNames.GrepSearch,
-    description: "Perform a search over the repository using ripgrep.",
+    description:
+      "Perform a search over the repository using ripgrep. Output may be truncated, so use targeted queries",
     parameters: {
       type: "object",
       required: ["query"],

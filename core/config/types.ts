@@ -235,10 +235,6 @@ declare global {
     loadSubmenuItems(args: LoadSubmenuItemsArgs): Promise<ContextSubmenuItem[]>;
   }
   
-  export interface Checkpoint {
-    [filepath: string]: string;
-  }
-  
   export interface Session {
     sessionId: string;
     title: string;
@@ -403,6 +399,7 @@ declare global {
     | "generated"
     | "calling"
     | "done"
+    | "errored"
     | "canceled";
   
   // Will exist only on "assistant" messages with tool calls
@@ -422,8 +419,6 @@ declare global {
     promptLogs?: PromptLog[];
     toolCallState?: ToolCallState;
     isGatheringContext?: boolean;
-    checkpoint?: Checkpoint;
-    isBeforeCheckpoint?: boolean;
   }
   
   export interface LLMFullCompletionOptions extends BaseCompletionOptions {
@@ -724,7 +719,7 @@ declare global {
   
     getPinnedFiles(): Promise<string[]>;
   
-    getSearchResults(query: string): Promise<string>;
+    getSearchResults(query: string, maxResults?: number): Promise<string>;
   
     subprocess(command: string, cwd?: string): Promise<[string, string]>;
   
@@ -747,8 +742,6 @@ declare global {
     listDir(dir: string): Promise<[string, FileType][]>;
   
     getLastModified(files: string[]): Promise<{ [path: string]: number }>;
-  
-    getGitHubAuthToken(args: GetGhTokenArgs): Promise<string | undefined>;
   
     // LSP
     gotoDefinition(location: Location): Promise<RangeInFile[]>;
@@ -840,7 +833,8 @@ declare global {
     | "llava"
     | "gemma"
     | "granite"
-    | "llama3";
+    | "llama3"
+    | "codestral";
   
   export interface RequestOptions {
     timeout?: number;
@@ -930,6 +924,7 @@ declare global {
     numThreads?: number;
     useMmap?: boolean;
     keepAlive?: number;
+    numGpu?: number;
     raw?: boolean;
     stream?: boolean;
     prediction?: Prediction;
@@ -1009,6 +1004,8 @@ declare global {
     type: "stdio";
     command: string;
     args: string[];
+    env?: Record<string, string>;
+    cwd?: string;
   }
   
   interface WebSocketOptions {
@@ -1049,13 +1046,6 @@ declare global {
     repoMapFileSelection?: string;
   }
   
-  export type EditStatus =
-    | "not-started"
-    | "streaming"
-    | "accepting"
-    | "accepting:full-diff"
-    | "done";
-  
   export type ApplyStateStatus =
     | "streaming" // Changes are being applied to the file
     | "done" // All changes have been applied, awaiting user to accept/reject
@@ -1067,6 +1057,7 @@ declare global {
     numDiffs?: number;
     filepath?: string;
     fileContent?: string;
+    originalFileContent?: string;
   }
   
   export interface RangeInFileWithContents {

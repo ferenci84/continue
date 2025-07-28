@@ -1,18 +1,24 @@
-import { ContextItem, Tool, ToolExtras } from "..";
-import { MCPManagerSingleton } from "../context/mcp";
+import { ContextItem, Tool, ToolCall, ToolExtras } from "..";
+import { MCPManagerSingleton } from "../context/mcp/MCPManagerSingleton";
 import { canParseUrl } from "../util/url";
 import { BuiltInToolNames } from "./builtIn";
 
+import { codebaseToolImpl } from "./implementations/codebaseTool";
 import { createNewFileImpl } from "./implementations/createNewFile";
 import { createRuleBlockImpl } from "./implementations/createRuleBlock";
+import { fetchUrlContentImpl } from "./implementations/fetchUrlContent";
 import { fileGlobSearchImpl } from "./implementations/globSearch";
 import { grepSearchImpl } from "./implementations/grepSearch";
 import { lsToolImpl } from "./implementations/lsTool";
 import { readCurrentlyOpenFileImpl } from "./implementations/readCurrentlyOpenFile";
 import { readFileImpl } from "./implementations/readFile";
+import { requestRuleImpl } from "./implementations/requestRule";
 import { runTerminalCommandImpl } from "./implementations/runTerminalCommand";
 import { searchWebImpl } from "./implementations/searchWeb";
 import { viewDiffImpl } from "./implementations/viewDiff";
+import { viewRepoMapImpl } from "./implementations/viewRepoMap";
+import { viewSubdirectoryImpl } from "./implementations/viewSubdirectory";
+import { safeParseToolCallArgs } from "./parseArgs";
 
 async function callHttpTool(
   url: string,
@@ -29,11 +35,12 @@ async function callHttpTool(
     }),
   });
 
+  const data = await response.json();
+
   if (!response.ok) {
-    throw new Error(`Failed to call tool: ${url}`);
+    throw new Error(`Failed to call tool at ${url}:\n${JSON.stringify(data)}`);
   }
 
-  const data = await response.json();
   return data.output;
 }
 
@@ -84,7 +91,7 @@ async function callToolFromUri(
       });
 
       if (response.isError === true) {
-        throw new Error(`Failed to call tool: ${toolName}`);
+        throw new Error(JSON.stringify(response.content));
       }
 
       const contextItems: ContextItem[] = [];
@@ -130,17 +137,14 @@ async function callToolFromUri(
   }
 }
 
-export async function callTool(
-  tool: Tool,
+export async function callBuiltInTool(
+  functionName: string,
   args: any,
   extras: ToolExtras,
 ): Promise<ContextItem[]> {
-  const uri = tool.uri ?? tool.function.name;
-
-  switch (uri) {
+  switch (functionName) {
     case BuiltInToolNames.ReadFile:
       return await readFileImpl(args, extras);
-    // Note: Custom GUI handling for edit
     case BuiltInToolNames.CreateNewFile:
       return await createNewFileImpl(args, extras);
     case BuiltInToolNames.GrepSearch:
@@ -151,6 +155,8 @@ export async function callTool(
       return await runTerminalCommandImpl(args, extras);
     case BuiltInToolNames.SearchWeb:
       return await searchWebImpl(args, extras);
+    case BuiltInToolNames.FetchUrlContent:
+      return await fetchUrlContentImpl(args, extras);
     case BuiltInToolNames.ViewDiff:
       return await viewDiffImpl(args, extras);
     case BuiltInToolNames.LSTool:
@@ -159,11 +165,52 @@ export async function callTool(
       return await readCurrentlyOpenFileImpl(args, extras);
     case BuiltInToolNames.CreateRuleBlock:
       return await createRuleBlockImpl(args, extras);
-    // case BuiltInToolNames.ViewRepoMap:
-    //   return await viewRepoMapImpl(args, extras);
-    // case BuiltInToolNames.ViewSubdirectory:
-    //   return await viewSubdirectoryImpl(args, extras);
+    case BuiltInToolNames.RequestRule:
+      return await requestRuleImpl(args, extras);
+    case BuiltInToolNames.CodebaseTool:
+      return await codebaseToolImpl(args, extras);
+    case BuiltInToolNames.ViewRepoMap:
+      return await viewRepoMapImpl(args, extras);
+    case BuiltInToolNames.ViewSubdirectory:
+      return await viewSubdirectoryImpl(args, extras);
     default:
-      return await callToolFromUri(uri, args, extras);
+      throw new Error(`Tool "${functionName}" not found`);
+  }
+}
+
+// Handles calls for core/non-client tools
+// Returns an error context item if the tool call fails
+// Note: Edit tool is handled on client
+export async function callTool(
+  tool: Tool,
+  toolCall: ToolCall,
+  extras: ToolExtras,
+): Promise<{
+  contextItems: ContextItem[];
+  errorMessage: string | undefined;
+}> {
+  try {
+    const args = safeParseToolCallArgs(toolCall);
+    const contextItems = tool.uri
+      ? await callToolFromUri(tool.uri, args, extras)
+      : await callBuiltInTool(tool.function.name, args, extras);
+    if (tool.faviconUrl) {
+      contextItems.forEach((item) => {
+        item.icon = tool.faviconUrl;
+      });
+    }
+    return {
+      contextItems,
+      errorMessage: undefined,
+    };
+  } catch (e) {
+    let errorMessage = `${e}`;
+    if (e instanceof Error) {
+      errorMessage = e.message;
+    }
+    return {
+      contextItems: [],
+      errorMessage,
+    };
   }
 }

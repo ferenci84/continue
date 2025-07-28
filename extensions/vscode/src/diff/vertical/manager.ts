@@ -1,5 +1,4 @@
-import { ChatMessage, DiffLine, ILLM, RuleWithSource } from "core";
-import { ConfigHandler } from "core/config/ConfigHandler";
+import { ChatMessage, DiffLine, IDE, ILLM, RuleWithSource } from "core";
 import { streamDiffLines } from "core/edit/streamDiffLines";
 import { pruneLinesFromBottom, pruneLinesFromTop } from "core/llm/countTokens";
 import { getMarkdownLanguageTagForFile } from "core/util";
@@ -11,6 +10,10 @@ import EditDecorationManager from "../../quickEdit/EditDecorationManager";
 import { handleLLMError } from "../../util/errorHandling";
 import { VsCodeWebviewProtocol } from "../../webviewProtocol";
 
+import { ApplyAbortManager } from "core/edit/applyAbortManager";
+import { EDIT_MODE_STREAM_ID } from "core/edit/constants";
+import { stripImages } from "core/util/messageContent";
+import { editOutcomeTracker } from "../../extension/EditOutcomeTracker";
 import { VerticalDiffHandler, VerticalDiffHandlerOptions } from "./handler";
 
 export interface VerticalDiffCodeLens {
@@ -23,7 +26,6 @@ export class VerticalDiffManager {
   public refreshCodeLens: () => void = () => {};
 
   private fileUriToHandler: Map<string, VerticalDiffHandler> = new Map();
-
   fileUriToCodeLens: Map<string, VerticalDiffCodeLens[]> = new Map();
 
   private userChangeListener: vscode.Disposable | undefined;
@@ -31,9 +33,9 @@ export class VerticalDiffManager {
   logDiffs: DiffLine[] | undefined;
 
   constructor(
-    private readonly configHandler: ConfigHandler,
     private readonly webviewProtocol: VsCodeWebviewProtocol,
     private readonly editDecorationManager: EditDecorationManager,
+    private readonly ide: IDE,
   ) {
     this.userChangeListener = undefined;
   }
@@ -43,12 +45,12 @@ export class VerticalDiffManager {
     startLine: number,
     endLine: number,
     options: VerticalDiffHandlerOptions,
-  ) {
+  ): VerticalDiffHandler | undefined {
     if (this.fileUriToHandler.has(fileUri)) {
       this.fileUriToHandler.get(fileUri)?.clear(false);
       this.fileUriToHandler.delete(fileUri);
     }
-    const editor = vscode.window.activeTextEditor; // TODO
+    const editor = vscode.window.activeTextEditor; // TODO might cause issues if user switches files
     if (editor && URI.equal(editor.document.uri.toString(), fileUri)) {
       const handler = new VerticalDiffHandler(
         startLine,
@@ -68,6 +70,10 @@ export class VerticalDiffManager {
 
   getHandlerForFile(fileUri: string) {
     return this.fileUriToHandler.get(fileUri);
+  }
+
+  getStreamIdForFile(fileUri: string): string | undefined {
+    return this.fileUriToHandler.get(fileUri)?.streamId;
   }
 
   // Creates a listener for document changes by user.
@@ -230,6 +236,7 @@ export class VerticalDiffManager {
             filepath: fileUri,
             toolCallId,
           }),
+        streamId,
       },
     );
 
@@ -259,8 +266,13 @@ export class VerticalDiffManager {
       this.enableDocumentChangeListener();
     } catch (e) {
       this.disableDocumentChangeListener();
-      if (!handleLLMError(e)) {
-        vscode.window.showErrorMessage(`Error streaming diff: ${e}`);
+      const handled = await handleLLMError(e);
+      if (!handled) {
+        let message = "Error streaming diffs";
+        if (e instanceof Error) {
+          message += `: ${e.message}`;
+        }
+        throw new Error(message);
       }
     } finally {
       vscode.commands.executeCommand(
@@ -275,24 +287,26 @@ export class VerticalDiffManager {
     input,
     llm,
     streamId,
-    onlyOneInsertion,
     quickEdit,
     range,
     newCode,
     toolCallId,
-    rules,
+    rulesToInclude,
   }: {
     input: string;
     llm: ILLM;
     streamId?: string;
-    onlyOneInsertion?: boolean;
     quickEdit?: string;
     range?: vscode.Range;
     newCode?: string;
     toolCallId?: string;
-    rules: RuleWithSource[];
+    rulesToInclude: undefined | RuleWithSource[];
   }): Promise<string | undefined> {
-    vscode.commands.executeCommand("setContext", "continue.diffVisible", true);
+    void vscode.commands.executeCommand(
+      "setContext",
+      "continue.diffVisible",
+      true,
+    );
 
     let editor = vscode.window.activeTextEditor;
 
@@ -344,11 +358,11 @@ export class VerticalDiffManager {
       // startLine += effectiveLineDelta;
       // endLine += effectiveLineDelta;
 
-      existingHandler.clear(false);
+      await existingHandler.clear(false);
     }
 
     await new Promise((resolve) => {
-      setTimeout(resolve, 200);
+      setTimeout(resolve, 150);
     });
 
     // Create new handler with determined start/end
@@ -369,6 +383,7 @@ export class VerticalDiffManager {
             filepath: fileUri,
             toolCallId,
           }),
+        streamId,
       },
     );
 
@@ -426,13 +441,16 @@ export class VerticalDiffManager {
       );
     }
 
-    vscode.commands.executeCommand(
+    void vscode.commands.executeCommand(
       "setContext",
       "continue.streamingDiff",
       true,
     );
 
     this.editDecorationManager.clear();
+
+    const abortManager = ApplyAbortManager.getInstance();
+    const abortController = abortManager.get(fileUri);
 
     try {
       const streamedLines: string[] = [];
@@ -443,11 +461,11 @@ export class VerticalDiffManager {
           prefix,
           suffix,
           llm,
-          rules,
+          rulesToInclude,
           input,
           language: getMarkdownLanguageTagForFile(fileUri),
-          onlyOneInsertion: !!onlyOneInsertion,
           overridePrompt,
+          abortController,
         });
 
         for await (const line of stream) {
@@ -463,19 +481,70 @@ export class VerticalDiffManager {
       // enable a listener for user edits to file while diff is open
       this.enableDocumentChangeListener();
 
-      return `${prefix}${streamedLines.join("\n")}${suffix}`;
+      if (abortController.signal.aborted) {
+        void vscode.commands.executeCommand("continue.rejectDiff");
+      }
+
+      const fileAfterEdit = `${prefix}${streamedLines.join("\n")}${suffix}`;
+      await this.trackEditInteraction({
+        model: llm,
+        filepath: fileUri,
+        prompt: input,
+        fileAfterEdit,
+      });
+
+      return fileAfterEdit;
     } catch (e) {
       this.disableDocumentChangeListener();
-      if (!handleLLMError(e)) {
-        vscode.window.showErrorMessage(`Error streaming diff: ${e}`);
+      const handled = await handleLLMError(e);
+      if (!handled) {
+        let message = "Error streaming edit diffs";
+        if (e instanceof Error) {
+          message += `: ${e.message}`;
+        }
+        throw new Error(message);
       }
-      return undefined;
     } finally {
-      vscode.commands.executeCommand(
+      void vscode.commands.executeCommand(
         "setContext",
         "continue.streamingDiff",
         false,
       );
     }
+  }
+
+  async trackEditInteraction({
+    model,
+    filepath,
+    prompt,
+    fileAfterEdit,
+  }: {
+    model: ILLM;
+    filepath: string;
+    prompt: string;
+    fileAfterEdit: string | undefined;
+  }) {
+    // Get previous code content for outcome tracking
+    const previousCode = await this.ide.readFile(filepath);
+    const newCode = fileAfterEdit ?? "";
+    const previousCodeLines = previousCode.split("\n").length;
+    const newCodeLines = newCode.split("\n").length;
+    const lineChange = newCodeLines - previousCodeLines;
+
+    // Store pending edit data for outcome tracking
+    editOutcomeTracker.trackEditInteraction({
+      streamId: EDIT_MODE_STREAM_ID,
+      timestamp: new Date().toISOString(),
+      modelProvider: model.underlyingProviderName,
+      modelTitle: model.title ?? "",
+      prompt: stripImages(prompt),
+      completion: newCode,
+      previousCode,
+      newCode,
+      filepath: filepath,
+      previousCodeLines,
+      newCodeLines,
+      lineChange,
+    });
   }
 }

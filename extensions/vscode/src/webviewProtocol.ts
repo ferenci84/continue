@@ -8,7 +8,6 @@ import * as vscode from "vscode";
 import { IMessenger } from "../../../core/protocol/messenger";
 
 import { handleLLMError } from "./util/errorHandling";
-import { showFreeTrialLoginMessage } from "./util/messages";
 
 export class VsCodeWebviewProtocol
   implements IMessenger<FromWebviewProtocol, ToWebviewProtocol>
@@ -87,7 +86,7 @@ export class VsCodeWebviewProtocol
             respond({ done: true, content: response, status: "success" });
           }
         } catch (e: any) {
-          if (handleLLMError(e)) {
+          if (await handleLLMError(e)) {
             // Respond without an error, so the UI doesn't show the error component
             respond({ done: true, status: "error" });
           }
@@ -130,15 +129,11 @@ export class VsCodeWebviewProtocol
               .showInformationMessage(message, "Add API Key", "Use Local Model")
               .then((selection) => {
                 if (selection === "Add API Key") {
-                  this.request("addApiKey", undefined);
+                  this.request("setupApiKey", undefined);
                 } else if (selection === "Use Local Model") {
                   this.request("setupLocalConfig", undefined);
                 }
               });
-          } else if (message.includes("Please sign in with GitHub")) {
-            showFreeTrialLoginMessage(message, this.reloadConfig, () =>
-              this.request("openOnboardingCard", undefined),
-            );
           } else {
             Telemetry.capture(
               "webview_protocol_error",
@@ -157,7 +152,7 @@ export class VsCodeWebviewProtocol
     this._webviewListener = this._webview.onDidReceiveMessage(handleMessage);
   }
 
-  constructor(private readonly reloadConfig: () => void) {}
+  constructor() {}
 
   invoke<T extends keyof FromWebviewProtocol>(
     messageType: T,

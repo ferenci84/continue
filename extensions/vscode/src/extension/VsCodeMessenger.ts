@@ -1,4 +1,6 @@
 import { ConfigHandler } from "core/config/ConfigHandler";
+import { DataLogger } from "core/data/log";
+import { EDIT_MODE_STREAM_ID } from "core/edit/constants";
 import {
   FromCoreProtocol,
   FromWebviewProtocol,
@@ -17,15 +19,18 @@ import * as vscode from "vscode";
 
 import { ApplyManager } from "../apply";
 import { VerticalDiffManager } from "../diff/vertical/manager";
+import { addCurrentSelectionToEdit } from "../quickEdit/AddCurrentSelection";
 import EditDecorationManager from "../quickEdit/EditDecorationManager";
 import {
   getControlPlaneSessionInfo,
   WorkOsAuthProvider,
 } from "../stubs/WorkOsAuthProvider";
+import { handleLLMError } from "../util/errorHandling";
 import { showTutorial } from "../util/tutorial";
 import { getExtensionUri } from "../util/vscode";
 import { VsCodeIde } from "../VsCodeIde";
 import { VsCodeWebviewProtocol } from "../webviewProtocol";
+import { VsCodeExtension } from "./VsCodeExtension";
 
 type ToIdeOrWebviewFromCoreProtocol = ToIdeFromCoreProtocol &
   ToWebviewFromCoreProtocol;
@@ -78,6 +83,8 @@ export class VsCodeMessenger {
     private readonly configHandlerPromise: Promise<ConfigHandler>,
     private readonly workOsAuthProvider: WorkOsAuthProvider,
     private readonly editDecorationManager: EditDecorationManager,
+    private readonly context: vscode.ExtensionContext,
+    private readonly vsCodeExtension: VsCodeExtension,
   ) {
     /** WEBVIEW ONLY LISTENERS **/
     this.onWebview("showFile", (msg) => {
@@ -187,6 +194,15 @@ export class VsCodeMessenger {
         );
       });
     });
+    this.onWebview("edit/addCurrentSelection", async (msg) => {
+      const verticalDiffManager = await this.verticalDiffManagerPromise;
+      await addCurrentSelectionToEdit({
+        args: undefined,
+        editDecorationManager,
+        webviewProtocol: this.webviewProtocol,
+        verticalDiffManager,
+      });
+    });
     this.onWebview("edit/sendPrompt", async (msg) => {
       const prompt = msg.data.prompt;
       const { start, end } = msg.data.range.range;
@@ -209,28 +225,30 @@ export class VsCodeMessenger {
       const fileAfterEdit = await verticalDiffManager.streamEdit({
         input: stripImages(prompt),
         llm: model,
-        streamId: "edit",
+        streamId: EDIT_MODE_STREAM_ID,
         range: new vscode.Range(
           new vscode.Position(start.line, start.character),
           new vscode.Position(end.line, end.character),
         ),
-        rules: config.rules,
+        rulesToInclude: config.rules,
       });
 
-      void this.webviewProtocol.request("setEditStatus", {
-        status: "accepting",
-        fileAfterEdit,
+      // Log dev data
+      await DataLogger.getInstance().logDevData({
+        name: "editInteraction",
+        data: {
+          prompt: stripImages(prompt),
+          completion: fileAfterEdit ?? "",
+          modelProvider: model.underlyingProviderName,
+          modelTitle: model.title ?? "",
+          filepath: msg.data.range.filepath,
+        },
       });
+
+      return fileAfterEdit;
     });
-    this.onWebview("edit/exit", async (msg) => {
-      if (msg.data.shouldFocusEditor) {
-        const activeEditor = vscode.window.activeTextEditor;
 
-        if (activeEditor) {
-          vscode.window.showTextDocument(activeEditor.document);
-        }
-      }
-
+    this.onWebview("edit/clearDecorations", async (msg) => {
       editDecorationManager.clear();
     });
 
@@ -306,10 +324,10 @@ export class VsCodeMessenger {
       await ide.runCommand(msg.data.command);
     });
     this.onWebviewOrCore("getSearchResults", async (msg) => {
-      return ide.getSearchResults(msg.data.query);
+      return ide.getSearchResults(msg.data.query, msg.data.maxResults);
     });
     this.onWebviewOrCore("getFileResults", async (msg) => {
-      return ide.getFileResults(msg.data.pattern);
+      return ide.getFileResults(msg.data.pattern, msg.data.maxResults);
     });
     this.onWebviewOrCore("subprocess", async (msg) => {
       return ide.subprocess(msg.data.command, msg.data.cwd);
@@ -337,9 +355,6 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("showToast", (msg) => {
       this.ide.showToast(...msg.data);
     });
-    this.onWebviewOrCore("getGitHubAuthToken", (msg) =>
-      ide.getGitHubAuthToken(msg.data),
-    );
     this.onWebviewOrCore("getControlPlaneSessionInfo", async (msg) => {
       return getControlPlaneSessionInfo(
         msg.data.silent,
@@ -409,6 +424,10 @@ export class VsCodeMessenger {
 
     this.onWebviewOrCore("getUniqueId", async (msg) => {
       return await ide.getUniqueId();
+    });
+
+    this.onWebviewOrCore("reportError", async (msg) => {
+      await handleLLMError(msg.data);
     });
   }
 }

@@ -13,6 +13,7 @@ export const completionOptionsSchema = z.object({
   numThreads: z.number().optional(),
   useMmap: z.boolean().optional(),
   keepAlive: z.number().optional(),
+  numGpu: z.number().optional(),
   raw: z.boolean().optional(),
   stream: z.boolean().optional(),
 });
@@ -55,10 +56,11 @@ export const modelDescriptionSchema = z.object({
     "sagemaker",
     "cloudflare",
     "azure",
+    "ovhcloud",
     "continue-proxy",
     "nebius",
     "scaleway",
-    "watsonx"
+    "watsonx",
   ]),
   model: z.string(),
   apiKey: z.string().optional(),
@@ -107,12 +109,12 @@ export const embeddingsProviderSchema = z.object({
     "ollama",
     "openai",
     "cohere",
-    "free-trial",
     "gemini",
+    "ovhcloud",
     "continue-proxy",
     "nebius",
     "scaleway",
-    "watsonx"
+    "watsonx",
   ]),
   apiBase: z.string().optional(),
   apiKey: z.string().optional(),
@@ -205,9 +207,10 @@ export const siteIndexingConfigSchema = z.object({
   startUrl: z.string(),
   // rootUrl: z.string(),
   title: z.string(),
-  maxDepth: z.string().optional(),
+  maxDepth: z.number().optional(),
   faviconUrl: z.string().optional(),
   useLocalCrawling: z.boolean().optional(),
+  sourceFile: z.string().optional(),
 });
 
 export const controlPlaneConfigSchema = z.object({

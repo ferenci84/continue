@@ -30,14 +30,12 @@ import {
   ModelDescription,
   RerankerDescription,
   SerializedContinueConfig,
-  SlashCommand,
+  SlashCommandWithSource,
 } from "..";
-import {
-  slashCommandFromDescription,
-  slashFromCustomCommand,
-} from "../commands/index";
-import { MCPManagerSingleton } from "../context/mcp";
-import CodebaseContextProvider from "../context/providers/CodebaseContextProvider";
+import { getLegacyBuiltInSlashCommandFromDescription } from "../commands/slash/built-in-legacy";
+import { convertCustomCommandToSlashCommand } from "../commands/slash/customSlashCommand";
+import { slashCommandFromPromptFile } from "../commands/slash/promptFileSlashCommand";
+import { MCPManagerSingleton } from "../context/mcp/MCPManagerSingleton";
 import ContinueProxyContextProvider from "../context/providers/ContinueProxyContextProvider";
 import CustomContextProviderClass from "../context/providers/CustomContextProvider";
 import FileContextProvider from "../context/providers/FileContextProvider";
@@ -46,12 +44,9 @@ import { useHub } from "../control-plane/env";
 import { BaseLLM } from "../llm";
 import { LLMClasses, llmFromDescription } from "../llm/llms";
 import CustomLLMClass from "../llm/llms/CustomLLM";
-import FreeTrial from "../llm/llms/FreeTrial";
 import { LLMReranker } from "../llm/llms/llm";
 import TransformersJsEmbeddingsProvider from "../llm/llms/TransformersJsEmbeddingsProvider";
-import { slashCommandFromPromptFileV1 } from "../promptFiles/v1/slashCommandFromPromptFile";
-import { getAllPromptFiles } from "../promptFiles/v2/getPromptFiles";
-import { allTools } from "../tools";
+import { getAllPromptFiles } from "../promptFiles/getPromptFiles";
 import { copyOf } from "../util";
 import { GlobalContext } from "../util/GlobalContext";
 import mergeJson from "../util/merge";
@@ -67,6 +62,8 @@ import {
 } from "../util/paths";
 import { localPathToUri } from "../util/pathToUri";
 
+import { getToolsForIde } from "../tools";
+import { resolveRelativePathInDir } from "../util/ideUtils";
 import { modifyAnyConfigWithSharedConfig } from "./sharedConfig";
 import {
   getModelByRole,
@@ -101,7 +98,14 @@ export function resolveSerializedConfig(
 
 const configMergeKeys = {
   models: (a: any, b: any) => a.title === b.title,
-  contextProviders: (a: any, b: any) => a.name === b.name,
+  contextProviders: (a: any, b: any) => {
+    // If not HTTP providers, use the name only
+    if (a.name !== "http" || b.name !== "http") {
+      return a.name === b.name;
+    }
+    // For HTTP providers, consider them different if they have different URLs
+    return a.name === b.name && a.params?.url === b.params?.url;
+  },
   slashCommands: (a: any, b: any) => a.name === b.name,
   customCommands: (a: any, b: any) => a.name === b.name,
 };
@@ -168,15 +172,15 @@ async function serializedToIntermediateConfig(
   ide: IDE,
 ): Promise<Config> {
   // DEPRECATED - load custom slash commands
-  const slashCommands: SlashCommand[] = [];
+  const slashCommands: SlashCommandWithSource[] = [];
   for (const command of initial.slashCommands || []) {
-    const newCommand = slashCommandFromDescription(command);
+    const newCommand = getLegacyBuiltInSlashCommandFromDescription(command);
     if (newCommand) {
       slashCommands.push(newCommand);
     }
   }
   for (const command of initial.customCommands || []) {
-    slashCommands.push(slashFromCustomCommand(command));
+    slashCommands.push(convertCustomCommandToSlashCommand(command));
   }
 
   // DEPRECATED - load slash commands from v1 prompt files
@@ -188,7 +192,7 @@ async function serializedToIntermediateConfig(
   );
 
   for (const file of promptFiles) {
-    const slashCommand = slashCommandFromPromptFileV1(file.path, file.content);
+    const slashCommand = slashCommandFromPromptFile(file.path, file.content);
     if (slashCommand) {
       slashCommands.push(slashCommand);
     }
@@ -201,6 +205,24 @@ async function serializedToIntermediateConfig(
   };
 
   return config;
+}
+
+// Merge request options set for entire config with model specific options
+function applyRequestOptionsToModels(
+  models: BaseLLM[],
+  config: Config,
+  roles: ModelRole[] | undefined = undefined,
+) {
+  // Prepare models
+  for (const model of models) {
+    model.requestOptions = {
+      ...model.requestOptions,
+      ...config.requestOptions,
+    };
+    if (roles !== undefined) {
+      model.roles = model.roles ?? roles;
+    }
+  }
 }
 
 export function isContextProviderWithParams(
@@ -219,7 +241,6 @@ async function intermediateToFinalConfig({
   llmLogger,
   workOsAccessToken,
   loadPromptFiles = true,
-  allowFreeTrial = true,
 }: {
   config: Config;
   ide: IDE;
@@ -229,10 +250,12 @@ async function intermediateToFinalConfig({
   llmLogger: ILLMLogger;
   workOsAccessToken: string | undefined;
   loadPromptFiles?: boolean;
-  allowFreeTrial?: boolean;
 }): Promise<{ config: ContinueConfig; errors: ConfigValidationError[] }> {
   const errors: ConfigValidationError[] = [];
-
+  const workspaceDirs = await ide.getWorkspaceDirs();
+  const getUriFromPath = (path: string) => {
+    return resolveRelativePathInDir(path, ide, workspaceDirs);
+  };
   // Auto-detect models
   let models: BaseLLM[] = [];
   await Promise.all(
@@ -241,6 +264,7 @@ async function intermediateToFinalConfig({
         const llm = await llmFromDescription(
           desc,
           ide.readFile.bind(ide),
+          getUriFromPath,
           uniqueId,
           ideSettings,
           llmLogger,
@@ -262,6 +286,7 @@ async function intermediateToFinalConfig({
                     title: modelName,
                   },
                   ide.readFile.bind(ide),
+                  getUriFromPath,
                   uniqueId,
                   ideSettings,
                   llmLogger,
@@ -311,66 +336,54 @@ async function intermediateToFinalConfig({
     }),
   );
 
-  // Prepare models
-  for (const model of models) {
-    model.requestOptions = {
-      ...model.requestOptions,
-      ...config.requestOptions,
-    };
-    model.roles = model.roles ?? ["chat", "apply", "edit", "summarize"]; // Default to chat role if not specified
-  }
+  applyRequestOptionsToModels(models, config, [
+    "chat",
+    "apply",
+    "edit",
+    "summarize",
+  ]); // Default to chat role if not specified
 
-  if (allowFreeTrial) {
-    // Obtain auth token (iff free trial being used)
-    const freeTrialModels = models.filter(
-      (model) => model.providerName === "free-trial",
-    );
-    if (freeTrialModels.length > 0) {
-      const ghAuthToken = await ide.getGitHubAuthToken({});
-      for (const model of freeTrialModels) {
-        (model as FreeTrial).setupGhAuthToken(ghAuthToken);
-      }
-    }
-  } else {
-    // Remove free trial models
-    models = models.filter((model) => model.providerName !== "free-trial");
+  // Free trial provider will be completely ignored
+  let warnAboutFreeTrial = false;
+  models = models.filter((model) => model.providerName !== "free-trial");
+  if (models.filter((m) => m.providerName === "free-trial").length) {
+    warnAboutFreeTrial = true;
   }
 
   // Tab autocomplete model
-  let tabAutocompleteModels: BaseLLM[] = [];
+  const tabAutocompleteModels: BaseLLM[] = [];
   if (config.tabAutocompleteModel) {
-    tabAutocompleteModels = (
-      await Promise.all(
-        (Array.isArray(config.tabAutocompleteModel)
-          ? config.tabAutocompleteModel
-          : [config.tabAutocompleteModel]
-        ).map(async (desc) => {
-          if ("title" in desc) {
-            const llm = await llmFromDescription(
-              desc,
-              ide.readFile.bind(ide),
-              uniqueId,
-              ideSettings,
-              llmLogger,
-              config.completionOptions,
-            );
+    const autocompleteConfigs = Array.isArray(config.tabAutocompleteModel)
+      ? config.tabAutocompleteModel
+      : [config.tabAutocompleteModel];
 
-            if (llm?.providerName === "free-trial") {
-              if (!allowFreeTrial) {
-                // This shouldn't happen
-                throw new Error("Free trial cannot be used with control plane");
-              }
-              const ghAuthToken = await ide.getGitHubAuthToken({});
-              (llm as FreeTrial).setupGhAuthToken(ghAuthToken);
+    await Promise.all(
+      autocompleteConfigs.map(async (desc) => {
+        if ("title" in desc) {
+          const llm = await llmFromDescription(
+            desc,
+            ide.readFile.bind(ide),
+            getUriFromPath,
+            uniqueId,
+            ideSettings,
+            llmLogger,
+            config.completionOptions,
+          );
+          if (llm) {
+            if (llm.providerName === "free-trial") {
+              warnAboutFreeTrial = true;
+            } else {
+              tabAutocompleteModels.push(llm);
             }
-            return llm;
-          } else {
-            return new CustomLLMClass(desc);
           }
-        }),
-      )
-    ).filter((x) => x !== undefined) as BaseLLM[];
+        } else {
+          tabAutocompleteModels.push(new CustomLLMClass(desc));
+        }
+      }),
+    );
   }
+
+  applyRequestOptionsToModels(tabAutocompleteModels, config);
 
   // These context providers are always included, regardless of what, if anything,
   // the user has configured in config.json
@@ -384,13 +397,7 @@ async function intermediateToFinalConfig({
         | undefined
     )?.params || {};
 
-  const DEFAULT_CONTEXT_PROVIDERS = [
-    new FileContextProvider({}),
-    // Add codebase provider if indexing is enabled
-    ...(!config.disableIndexing
-      ? [new CodebaseContextProvider(codebaseContextParams)]
-      : []),
-  ];
+  const DEFAULT_CONTEXT_PROVIDERS = [new FileContextProvider({})];
 
   const DEFAULT_CONTEXT_PROVIDERS_TITLES = DEFAULT_CONTEXT_PROVIDERS.map(
     ({ description: { title } }) => title,
@@ -433,7 +440,10 @@ async function intermediateToFinalConfig({
         return embedConfig;
       }
       const { provider, ...options } = embedConfig;
-      if (provider === "transformers.js") {
+      if (provider === "transformers.js" || provider === "free-trial") {
+        if (provider === "free-trial") {
+          warnAboutFreeTrial = true;
+        }
         return new TransformersJsEmbeddingsProvider();
       } else {
         const cls = LLMClasses.find((c) => c.providerName === provider);
@@ -470,7 +480,10 @@ async function intermediateToFinalConfig({
       return rerankingConfig;
     }
     const { name, params } = config.reranker as RerankerDescription;
-
+    if (name === "free-trial") {
+      warnAboutFreeTrial = true;
+      return null;
+    }
     if (name === "llm") {
       const llm = models.find((model) => model.title === params?.modelTitle);
       if (!llm) {
@@ -486,7 +499,7 @@ async function intermediateToFinalConfig({
       const cls = LLMClasses.find((c) => c.providerName === name);
       if (cls) {
         const llmOptions: LLMOptions = {
-          model: params?.model,
+          model: params?.model ?? "UNSPECIFIED",
           ...params,
         };
         return new cls(llmOptions);
@@ -501,12 +514,20 @@ async function intermediateToFinalConfig({
   }
   const newReranker = getRerankingILLM(config.reranker);
 
+  if (warnAboutFreeTrial) {
+    errors.push({
+      fatal: false,
+      message:
+        "Model provider 'free-trial' is no longer supported, will be ignored",
+    });
+  }
+
   const continueConfig: ContinueConfig = {
     ...config,
     contextProviders,
-    tools: [...allTools],
+    tools: await getToolsForIde(ide),
     mcpServerStatuses: [],
-    slashCommands: config.slashCommands ?? [],
+    slashCommands: [],
     modelsByRole: {
       chat: models,
       edit: models,
@@ -527,6 +548,17 @@ async function intermediateToFinalConfig({
     },
     rules: [],
   };
+
+  for (const cmd of config.slashCommands ?? []) {
+    if ("source" in cmd) {
+      continueConfig.slashCommands.push(cmd);
+    } else {
+      continueConfig.slashCommands.push({
+        ...cmd,
+        source: "config-ts-slash-command",
+      });
+    }
+  }
 
   if (config.systemMessage) {
     continueConfig.rules.unshift({
@@ -602,6 +634,7 @@ async function intermediateToFinalConfig({
 function llmToSerializedModelDescription(llm: ILLM): ModelDescription {
   return {
     provider: llm.providerName,
+    underlyingProviderName: llm.underlyingProviderName,
     model: llm.model,
     title: llm.title ?? llm.model,
     apiKey: llm.apiKey,
@@ -609,12 +642,17 @@ function llmToSerializedModelDescription(llm: ILLM): ModelDescription {
     contextLength: llm.contextLength,
     template: llm.template,
     completionOptions: llm.completionOptions,
+    baseAgentSystemMessage: llm.baseAgentSystemMessage,
+    basePlanSystemMessage: llm.basePlanSystemMessage,
     baseChatSystemMessage: llm.baseChatSystemMessage,
     requestOptions: llm.requestOptions,
     promptTemplates: serializePromptTemplates(llm.promptTemplates),
     capabilities: llm.capabilities,
     roles: llm.roles,
     configurationStatus: llm.getConfigurationStatus(),
+    apiKeyLocation: llm.apiKeyLocation,
+    envSecretLocations: llm.envSecretLocations,
+    sourceFile: llm.sourceFile,
   };
 }
 
@@ -625,9 +663,10 @@ async function finalToBrowserConfig(
   return {
     allowAnonymousTelemetry: final.allowAnonymousTelemetry,
     completionOptions: final.completionOptions,
-    slashCommands: final.slashCommands?.map(
-      ({ run, ...slashCommandDescription }) => slashCommandDescription,
-    ),
+    slashCommands: final.slashCommands?.map(({ run, ...rest }) => ({
+      ...rest,
+      isLegacy: !!run,
+    })),
     contextProviders: final.contextProviders?.map((c) => c.description),
     disableIndexing: final.disableIndexing,
     disableSessionTitles: final.disableSessionTitles,
@@ -949,7 +988,6 @@ async function loadContinueConfigFromJson(
 
 export {
   finalToBrowserConfig,
-  intermediateToFinalConfig,
   loadContinueConfigFromJson,
   type BrowserSerializedContinueConfig,
 };

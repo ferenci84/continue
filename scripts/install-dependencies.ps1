@@ -76,6 +76,42 @@ if (($null -eq $node)) {
 Write-Host "`nInstalling root-level dependencies..." -ForegroundColor White
 npm install
 
+Write-Host "`nBuilding config-types..." -ForegroundColor White
+Push-Location packages/config-types
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding fetch..." -ForegroundColor White
+Push-Location packages/fetch
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding llm-info..." -ForegroundColor White
+Push-Location packages/llm-info
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding config-yaml..." -ForegroundColor White
+Push-Location packages/config-yaml
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding openai-adapters..." -ForegroundColor White
+Push-Location packages/openai-adapters
+npm install
+npm run build
+Pop-Location
+
+Write-Host "`nBuilding hub..." -ForegroundColor White
+Push-Location packages/hub
+npm install
+npm run build
+Pop-Location
+
 Write-Host "`nInstalling Core extension dependencies..." -ForegroundColor White
 Push-Location core
 npm install
