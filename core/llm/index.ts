@@ -1001,10 +1001,9 @@ export abstract class BaseLLM implements ILLM {
         }
       } else {
         if (this.shouldUseOpenAIAdapter("streamChat") && this.openaiAdapter) {
-
           let body = toChatBody(messages, completionOptions);
           body = this.modifyChatBody(body);
-          // TODO: Log the body
+
           if (logEnabled) {
             interaction?.logItem({
               kind: "startChat",
@@ -1055,7 +1054,6 @@ export abstract class BaseLLM implements ILLM {
           }
         } else {
 
-          // TODO: Also log the provider
           if (logEnabled) {
             interaction?.logItem({
               kind: "startChat",
