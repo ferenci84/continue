@@ -220,7 +220,10 @@ export function RulesSection() {
     }
 
     if (mode === "chat") {
-      if (config.selectedModelByRole.chat?.baseChatSystemMessage) {
+      if (
+        typeof config.selectedModelByRole.chat?.baseChatSystemMessage ===
+        "string"
+      ) {
         rules.unshift({
           rule: config.selectedModelByRole.chat?.baseChatSystemMessage,
           source: "model-options-chat",
@@ -233,7 +236,10 @@ export function RulesSection() {
       }
     } else if (mode === "agent") {
       // agent
-      if (config.selectedModelByRole.chat?.baseAgentSystemMessage) {
+      if (
+        typeof config.selectedModelByRole.chat?.baseAgentSystemMessage ===
+        "string"
+      ) {
         rules.unshift({
           rule: config.selectedModelByRole.chat?.baseAgentSystemMessage,
           source: "model-options-agent",
@@ -246,7 +252,10 @@ export function RulesSection() {
       }
     } else {
       // plan
-      if (config.selectedModelByRole.chat?.basePlanSystemMessage) {
+      if (
+        typeof config.selectedModelByRole.chat?.basePlanSystemMessage ===
+        "string"
+      ) {
         rules.unshift({
           rule: config.selectedModelByRole.chat?.basePlanSystemMessage,
           source: "model-options-plan",
