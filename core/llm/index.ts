@@ -979,6 +979,7 @@ export abstract class BaseLLM implements ILLM {
     let thinking = "";
     let completion = "";
     let usage: Usage | undefined = undefined;
+    let citations: null | string[] = null
 
     try {
       if (this.templateMessages && !this.forceStreamChat) {
@@ -1027,6 +1028,9 @@ export abstract class BaseLLM implements ILLM {
                 });
                 yield result;
               }
+              if (!citations && (chunk as any).citations && Array.isArray((chunk as any).citations)) {
+                citations = (chunk as any).citations;
+              }
             }
           }
         } else {
@@ -1054,6 +1058,14 @@ export abstract class BaseLLM implements ILLM {
           }
         }
       }
+
+      if (citations) {
+        interaction?.logItem({
+          kind: "message",
+          message: { "role": "assistant", content: (`\n\nCitations:\n${citations.map((c, i) => `${i + 1}: ${c}`).join("\n")}\n\n`) },
+        });
+      }
+
       status = this._logEnd(
         completionOptions.model,
         prompt,
