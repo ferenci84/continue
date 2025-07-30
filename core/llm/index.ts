@@ -966,17 +966,6 @@ export abstract class BaseLLM implements ILLM {
     const prompt = this.templateMessages
       ? this.templateMessages(messagesCopy)
       : this._formatChatMessages(messagesCopy);
-    if (logEnabled) {
-      interaction?.logItem({
-        kind: "startChat",
-        messages,
-        options: completionOptions,
-        provider: this.providerName,
-      });
-      if (this.llmRequestHook) {
-        this.llmRequestHook(completionOptions.model, prompt);
-      }
-    }
 
     let thinking = "";
     let completion = "";
@@ -985,6 +974,19 @@ export abstract class BaseLLM implements ILLM {
 
     try {
       if (this.templateMessages && !this.forceStreamChat) {
+
+        if (logEnabled) {
+          interaction?.logItem({
+            kind: "startComplete",
+            prompt,
+            options: completionOptions,
+            provider: this.providerName,
+          });
+          if (this.llmRequestHook) {
+            this.llmRequestHook(completionOptions.model, prompt);
+          }
+        }
+
         for await (const chunk of this._streamComplete(
           prompt,
           signal,
@@ -999,8 +1001,24 @@ export abstract class BaseLLM implements ILLM {
         }
       } else {
         if (this.shouldUseOpenAIAdapter("streamChat") && this.openaiAdapter) {
+
           let body = toChatBody(messages, completionOptions);
           body = this.modifyChatBody(body);
+          // TODO: Log the body
+          if (logEnabled) {
+            interaction?.logItem({
+              kind: "startChat",
+              messages,
+              options: {
+                ...completionOptions,
+                requestBody: body
+              } as CompletionOptions,
+              provider: this.providerName,
+            });
+            if (this.llmRequestHook) {
+              this.llmRequestHook(completionOptions.model, prompt);
+            }
+          }
 
           if (completionOptions.stream === false) {
             // Stream false
@@ -1036,6 +1054,20 @@ export abstract class BaseLLM implements ILLM {
             }
           }
         } else {
+
+          // TODO: Also log the provider
+          if (logEnabled) {
+            interaction?.logItem({
+              kind: "startChat",
+              messages,
+              options: completionOptions,
+              provider: this.providerName,
+            });
+            if (this.llmRequestHook) {
+              this.llmRequestHook(completionOptions.model, prompt);
+            }
+          }
+
           for await (const chunk of this._streamChat(
             messages,
             signal,
