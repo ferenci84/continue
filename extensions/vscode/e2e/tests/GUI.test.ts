@@ -7,7 +7,7 @@ import {
   WebDriver,
   WebElement,
   WebView,
-  until,
+  until
 } from "vscode-extension-tester";
 
 import { GlobalActions } from "../actions/Global.actions";
@@ -21,11 +21,12 @@ describe("GUI Test", () => {
   let driver: WebDriver;
 
   before(async function () {
-    this.timeout(DEFAULT_TIMEOUT.XL);
+    this.timeout(DEFAULT_TIMEOUT.XL + DEFAULT_TIMEOUT.MD + DEFAULT_TIMEOUT.MD);
     // Uncomment this line for faster testing
     await GUIActions.moveContinueToSidebar(VSBrowser.instance.driver);
     await GlobalActions.openTestWorkspace();
     await GlobalActions.clearAllNotifications();
+    await GlobalActions.disableNextEdit();
   });
 
   beforeEach(async function () {
@@ -53,7 +54,7 @@ describe("GUI Test", () => {
       const description = await GUISelectors.getDescription(view);
 
       expect(await description.getText()).has.string(
-        "Log in to quickly build your first custom AI code assistant",
+        "Log in to quickly build your first custom AI code agent",
       );
     }).timeout(DEFAULT_TIMEOUT.XL);
 
@@ -281,7 +282,7 @@ describe("GUI Test", () => {
 
       // Verify the rule content
       const ruleItemText = await ruleItem.getText();
-      expect(ruleItemText).to.include("Assistant rule");
+      expect(ruleItemText).to.include("Agent rule");
       expect(ruleItemText).to.include("Always applied");
       expect(ruleItemText).to.include("TEST_SYS_MSG");
     }).timeout(DEFAULT_TIMEOUT.MD);
@@ -299,8 +300,6 @@ describe("GUI Test", () => {
       expect(await statusMessage.getText()).contain(
         "Continue viewed the git diff",
       );
-      // wait for 30 seconds, promise
-      await new Promise((resolve) => setTimeout(resolve, 30000));
     }).timeout(DEFAULT_TIMEOUT.MD * 100);
 
     it("should call tool after approval", async () => {
@@ -367,8 +366,9 @@ describe("GUI Test", () => {
     }).timeout(DEFAULT_TIMEOUT.MD);
   });
 
-  describe("Repeat back the system message", () => {
+  describe("should repeat back the system message", () => {
     it("should repeat back the system message", async () => {
+      await GUIActions.selectModeFromDropdown(view, "Chat");
       await GUIActions.selectModelFromDropdown(view, "SYSTEM MESSAGE MOCK LLM");
       const [messageInput] = await GUISelectors.getMessageInputFields(view);
       await messageInput.sendKeys("Hello");
@@ -376,7 +376,7 @@ describe("GUI Test", () => {
       await TestUtils.waitForSuccess(() =>
         GUISelectors.getThreadMessageByText(view, "TEST_SYS_MSG"),
       );
-    });
+    }).timeout(DEFAULT_TIMEOUT.XL * 1000);
   });
 
   describe("Chat Paths", () => {

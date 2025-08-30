@@ -31,6 +31,9 @@ export function OnboardingCardLanding({
         // A new assistant is created when the account is created
         // We want to switch to this immediately
         void dispatch(selectFirstHubProfile());
+
+        ideMessenger.post("showTutorial", undefined);
+        ideMessenger.post("showToast", ["info", "🎉 Welcome to Continue!"]);
       }
     });
   }
@@ -55,7 +58,7 @@ export function OnboardingCardLanding({
         <>
           <p className="xs:w-3/4 w-full text-sm">
             You've reached the free trial limit. Visit the Continue Platform to
-            select a Coding Assistant.
+            select a Coding Agent.
           </p>
           <Button
             onClick={openPastFreeTrialOnboarding}

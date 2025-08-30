@@ -1,5 +1,6 @@
 ---
 title: "config.yaml Reference"
+description: "Comprehensive guide to the config.yaml format used by Continue.dev for building custom coding assistants. Learn how to define models, context providers, rules, prompts, and more using reusable blocks and YAML configuration."
 ---
 
 ## Introduction
@@ -14,7 +15,7 @@ Continue hub assistants are defined using the `config.yaml` specification. Assis
 
 <Info>
   Config YAML replaces `config.json`, which is deprecated. View the **[Migration
-  Guide](/customize/yaml-migration)**.
+  Guide](/reference/yaml-migration)**.
 </Info>
 
 An assistant is made up of:
@@ -39,6 +40,10 @@ For example, the following assistant imports an Anthropic model and defines an O
 Assistant models section
 
 ```yaml
+name: Team Agent
+version: 1.0.0
+schema: v1
+
 models:
   - uses: anthropic/claude-3.5-sonnet # an imported model block
   - model: deepseek-reasoner # an explicit model block
@@ -79,10 +84,11 @@ Local blocks utilizing mustache notation for secrets (`${{ secrets.SECRET_NAME }
 
 Blocks can be passed user inputs, including hub secrets and raw text values. To create a block that has an input, use mustache templating as follows:
 
-Block config.yaml
-
-```yaml
+```yaml title="config.yaml"
 name: myprofile/custom-model
+version: 1.0.0
+schema: v1
+
 models:
   - name: My Favorite Model
     provider: anthropic
@@ -91,12 +97,13 @@ models:
       temperature: ${{ inputs.TEMP }}
 ```
 
-Which can then be imported like
+Which can then be imported like this:
 
-Assistant config.yaml
-
-```yaml
+```yaml title="config.yaml"
 name: myprofile/custom-assistant
+version: 1.0.0
+schema: v1
+
 models:
   - uses: myprofile/custom-model
     with:
@@ -110,10 +117,11 @@ Note that hub secrets can be passed as inputs, using a similar mustache format: 
 
 Block properties can be also be directly overriden using `override`. For example:
 
-Assistant config.yaml
-
-```yaml
+```yaml title="config.yaml"
 name: myprofile/custom-assistant
+version: 1.0.0
+schema: v1
+
 models:
   - uses: myprofile/custom-model
     with:
@@ -149,9 +157,7 @@ The top-level properties in the `config.yaml` configuration file are:
 
 The `name` property specifies the name of your project or configuration.
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"
 name: MyProject
 ```
 
@@ -183,15 +189,22 @@ The `models` section defines the language models used in your configuration. Mod
 
 - `roles`: An array specifying the roles this model can fulfill, such as `chat`, `autocomplete`, `embed`, `rerank`, `edit`, `apply`, `summarize`. The default value is `[chat, edit, apply, summarize]`. Note that the `summarize` role is not currently used.
 
-- `capabilities`: Array of strings denoting model capabilities, which will overwrite Continue's autodetection based on provider and model. Supported capabilities include `tool_use` and `image_input`.
+- `capabilities`: Array of strings denoting model capabilities, which will overwrite Continue's autodetection based on provider and model. See the [Model Capabilities guide](/customize/deep-dives/model-capabilities) for detailed information. Supported capabilities include:
+
+  - `tool_use`: Enables function/tool calling support (required for Agent mode)
+  - `image_input`: Enables image upload and processing support
+
+  Continue automatically detects these capabilities for most models, but you can override this when using custom deployments or if autodetection isn't working correctly.
 
 - `maxStopWords`: Maximum number of stop words allowed, to avoid API errors with extensive lists.
 
-- `promptTemplates`: Can be used to override the default prompt templates for different model roles. Valid values are `chat`, [`edit`](/customize/model-roles#edit-prompt-templating), [`apply`](/customize/model-roles#apply-prompt-templating) and [`autocomplete`](/customize/model-roles#autocomplete-prompt-templating). The `chat` property must be a valid template name, such as `llama3` or `anthropic`.
+- `promptTemplates`: Can be used to override the default prompt templates for different model roles. Valid values are [`chat`](), [`edit`](/customize/model-roles/edit#edit-prompt-templating), [`apply`](/customize/model-roles/apply#apply-prompt-templating) and [`autocomplete`](/customize/model-roles/autocomplete#autocomplete-prompt-templating). The `chat` property must be a valid template name, such as `llama3` or `anthropic`.
 
-- `chatOptions`: If the model includes role `chat`, these settings apply for Chat and Agent mode:
+- `chatOptions`: If the model includes role `chat`, these settings apply for Agent and Chat mode:
 
   - `baseSystemMessage`: Can be used to override the default system prompt for **Chat** mode.
+  - `baseAgentSystemMessage`: Can be used to override the default system prompt for **Agent** mode.
+  - `basePlanSystemMessage`: Can be used to override the default system prompt for **Plan** mode.
 
 - `embedOptions`: If the model includes role `embed`, these settings apply for embeddings:
 
@@ -230,11 +243,24 @@ The `models` section defines the language models used in your configuration. Mod
     - `key`: Path to the client certificate key file.
     - `passphrase`: Optional passphrase for the client certificate key file.
 
-#### Example
+- `autocompleteOptions`: If the model includes role `autocomplete`, these settings apply for tab autocompletion:
 
-config.yaml
+  - `disable`: If `true`, disables autocomplete for this model.
+  - `maxPromptTokens`: Maximum number of tokens for the autocomplete prompt.
+  - `debounceDelay`: Delay before triggering autocomplete in milliseconds.
+  - `modelTimeout`: Model timeout for autocomplete requests in milliseconds.
+  - `maxSuffixPercentage`: Maximum percentage of prompt allocated for suffix.
+  - `prefixPercentage`: Percentage of input allocated for prefix.
+  - `template`: Custom template for autocomplete using Mustache syntax. You can use the `{{{ prefix }}}`, `{{{ suffix }}}`, `{{{ filename }}}`, `{{{ reponame }}}`, and `{{{ language }}}` variables.
+  - `onlyMyCode`: Only includes code within the repository for context.
+  - `useCache`: If `true`, enables caching for completions.
+  - `useImports`: If `true`, includes imports in context.
+  - `useRecentlyEdited`: If `true`, includes recently edited files in context.
+  - `useRecentlyOpened`: If `true`, includes recently opened files in context.
 
-```yaml
+**Example:**
+
+```yaml title="config.yaml"
 models:
   - name: GPT-4o
     provider: openai
@@ -252,8 +278,8 @@ models:
     roles:
       - autocomplete
     autocompleteOptions:
-      debounceDelay: 500
-      maxPromptTokens: 1500
+      debounceDelay: 250
+      maxPromptTokens: 1024
       onlyMyCode: true
   - name: My Model - OpenAI-Compatible
     provider: openai
@@ -273,7 +299,7 @@ models:
 
 The `context` section defines context providers, which supply additional information or context to the language models. Each context provider can be configured with specific parameters.
 
-More information about usage/params for each context provider can be found [here](/customize/custom-providers)
+More information about usage/params for each context provider can be found [here](/customize/deep-dives/custom-providers)
 
 **Properties:**
 
@@ -283,22 +309,15 @@ More information about usage/params for each context provider can be found [here
 
 **Example:**
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"
 context:
   - provider: file
   - provider: code
-  - provider: codebase
-    params:
-      nFinal: 10
-  - provider: docs
   - provider: diff
   - provider: http
     name: Context Server 1
     params:
       url: "https://api.example.com/server1"
-  - provider: folder
   - provider: terminal
 ```
 
@@ -306,7 +325,7 @@ context:
 
 ### `rules`
 
-List of rules that the LLM should follow. These are concatenated into the system message for all [Chat](/features/chat/quick-start), [Edit](/features/edit/quick-start), and [Agent](/features/agent/quick-start) requests. See the [rules deep dive](/customization/rules) for details.
+List of rules that the LLM should follow. These are concatenated into the system message for all [Agent](/features/agent/quick-start), [Chat](/features/chat/quick-start), and [Edit](/features/edit/quick-start) requests. See the [rules deep dive](/customize/deep-dives/rules) for details.
 
 Explicit rules can either be simple text or an object with the following properties:
 
@@ -314,9 +333,7 @@ Explicit rules can either be simple text or an object with the following propert
 - `rule` (**required**): The text content of the rule
 - `globs` (optional): When files are provided as context that match this glob pattern, the rule will be included. This can be either a single pattern (e.g., `"**/*.{ts,tsx}"`) or an array of patterns (e.g., `["src/**/*.ts", "tests/**/*.ts"]`).
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"l
 rules:
   - Always annotate Python functions with their parameter and return types
   - name: TypeScript best practices
@@ -338,9 +355,7 @@ rules:
 
 A list of custom prompts that can be invoked from the chat window. Each prompt has a name, description, and the actual prompt text.
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"
 prompts:
   - name: check
     description: Check for mistakes in my code
@@ -364,11 +379,9 @@ List of documentation sites to index.
 - `favicon`: URL for site favicon (default is `/favicon.ico` from `startUrl`).
 - `useLocalCrawling`: Skip the default crawler and only crawl using a local crawler.
 
-Example
+**Example:**
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"
 docs:
   - name: Continue
     startUrl: https://docs.continue.dev/intro
@@ -392,9 +405,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io/introduction) is a 
 
 **Example:**
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"
 mcpServers:
   - name: My MCP Server
     command: uvx
@@ -409,25 +420,18 @@ mcpServers:
 
 ### `data`
 
-Destinations to which [development data](/customize/overview#development-data) will be sent.
+Destinations to which [development data](/customize/deep-dives/development-data) will be sent.
 
 **Properties:**
 
 - `name` (**required**): The display name of the data destination
-
 - `destination` (**required**): The destination/endpoint that will receive the data. Can be:
-
   - an HTTP endpoint that will receive a POST request with a JSON blob
   - a file URL to a directory in which events will be dumpted to `.jsonl` files
-
 - `schema` (**required**): the schema version of the JSON blobs to be sent. Options include `0.1.0` and `0.2.0`
-
 - `events`: an array of event names to include. Defaults to all events if not specified.
-
 - `level`: a pre-defined filter for event fields. Options include `all` and `noCode`; the latter excludes data like file contents, prompts, and completions. Defaults to `all`
-
 - `apiKey`: api key to be sent with request (Bearer header)
-
 - `requestOptions`: Options for event POST requests. Same format as [model requestOptions](#models).
 
 - `autocompleteOptions`: If the model includes role `autocomplete`, these settings apply for tab autocompletion:
@@ -441,11 +445,9 @@ Destinations to which [development data](/customize/overview#development-data) w
   - `template`: Template string for autocomplete prompts, using Mustache templating. You can use the `{{{ prefix }}}`, `{{{ suffix }}}`, `{{{ filename }}}`, `{{{ reponame }}}`, and `{{{ language }}}` variables.
   - `onlyMyCode`: If `true`, only includes code within the repository for context.
 
-  **Example:**
+**Example:**
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"
 data:
   - name: Local Data Bank
     destination: file:///Users/dallin/Documents/code/continuedev/continue-extras/external-data
@@ -466,9 +468,7 @@ data:
 
 Putting it all together, here's a complete example of a `config.yaml` configuration file:
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"
 name: MyProject
 version: 0.0.1
 schema: v1
@@ -496,6 +496,10 @@ models:
     model: starcoder
     roles:
       - autocomplete
+    autocompleteOptions:
+      debounceDelay: 350
+      maxPromptTokens: 1024
+      onlyMyCode: true
     defaultCompletionOptions:
       temperature: 0.3
       stop:
@@ -514,12 +518,7 @@ prompts:
 context:
   - provider: diff
   - provider: file
-  - provider: codebase
   - provider: code
-  - provider: docs
-    params:
-      startUrl: https://docs.example.com/introduction
-      rootUrl: https://docs.example.com
 mcpServers:
   - name: DevServer
     command: npm
@@ -542,9 +541,7 @@ data:
 
 You can also use node anchors to avoid duplication of properties. To do so, adding the YAML version header `%YAML 1.1` is needed, here's an example of a `config.yaml` configuration file using anchors:
 
-config.yaml
-
-```yaml
+```yaml title="config.yaml"
 %YAML 1.1
 ---
 name: MyProject
@@ -573,4 +570,8 @@ models:
     useLegacyCompletionsEndpoint: false
     roles:
       - autocomplete
+    autocompleteOptions:
+      debounceDelay: 350
+      maxPromptTokens: 1024
+      onlyMyCode: true
 ```

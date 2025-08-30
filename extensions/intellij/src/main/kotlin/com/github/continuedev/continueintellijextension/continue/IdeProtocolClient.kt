@@ -4,9 +4,10 @@ import com.github.continuedev.continueintellijextension.*
 import com.github.continuedev.continueintellijextension.activities.ContinuePluginDisposable
 import com.github.continuedev.continueintellijextension.activities.showTutorial
 import com.github.continuedev.continueintellijextension.auth.ContinueAuthService
+import com.github.continuedev.continueintellijextension.browser.ContinueBrowserService.Companion.getBrowser
 import com.github.continuedev.continueintellijextension.editor.DiffStreamService
 import com.github.continuedev.continueintellijextension.editor.EditorUtils
-import com.github.continuedev.continueintellijextension.error.ContinueErrorService
+import com.github.continuedev.continueintellijextension.error.ContinueSentryService
 import com.github.continuedev.continueintellijextension.protocol.*
 import com.github.continuedev.continueintellijextension.services.ContinueExtensionSettings
 import com.github.continuedev.continueintellijextension.services.ContinuePluginService
@@ -48,13 +49,6 @@ class IdeProtocolClient(
     @OptIn(ExperimentalCoroutinesApi::class)
     private val limitedDispatcher = Dispatchers.IO.limitedParallelism(4)
 
-    init {
-        // Setup config.json / config.ts save listeners
-        VirtualFileManager.getInstance().addAsyncFileListener(
-            AsyncFileSaveListener(continuePluginService), project.service<ContinuePluginDisposable>()
-        )
-    }
-
     fun handleMessage(msg: String, respond: (Any?) -> Unit) {
         coroutineScope.launch(limitedDispatcher) {
             val message = Gson().fromJson(msg, Message::class.java)
@@ -64,7 +58,7 @@ class IdeProtocolClient(
             try {
                 when (messageType) {
                     "toggleDevTools" -> {
-                        continuePluginService.continuePluginWindow?.browser?.browser?.openDevtools()
+                        project.getBrowser()?.openDevTools()
                     }
 
                     "showTutorial" -> {
@@ -72,8 +66,7 @@ class IdeProtocolClient(
                     }
 
                     "jetbrains/isOSREnabled" -> {
-                        val isOSREnabled = service<ContinueExtensionSettings>().continueState.enableOSR
-                        respond(isOSREnabled)
+                        respond(true)
                     }
 
                     "jetbrains/getColors" -> {
@@ -194,11 +187,6 @@ class IdeProtocolClient(
                         )
                         val tags = ide.getTags(artifactId)
                         respond(tags)
-                    }
-
-                    "getWorkspaceConfigs" -> {
-                        val configs = ide.getWorkspaceConfigs()
-                        respond(configs)
                     }
 
                     "getTerminalContents" -> {
@@ -478,38 +466,18 @@ class IdeProtocolClient(
                 }
             } catch (exception: Exception) {
                 val exceptionMessage = "Error handling message of type $messageType: $exception"
-                service<ContinueErrorService>().report(exception, exceptionMessage)
+                service<ContinueSentryService>().report(exception, exceptionMessage)
                 ide.showToast(ToastType.ERROR, exceptionMessage)
             }
         }
     }
 
-    fun sendHighlightedCode(edit: Boolean = false) {
-        val editor = EditorUtils.getEditor(project)
-        val rif = editor?.getHighlightedRIF() ?: return
-
-        val serializedRif = com.github.continuedev.continueintellijextension.RangeInFileWithContents(
-            filepath = rif.filepath,
-            range = rif.range,
-            contents = rif.contents
-        )
-
-        continuePluginService.sendToWebview(
-            "highlightedCode",
-            HighlightedCodePayload(
-                rangeInFileWithContents = serializedRif,
-                shouldRun = edit
-            )
-        )
-    }
-
-
     fun sendAcceptRejectDiff(accepted: Boolean, stepIndex: Int) {
-        continuePluginService.sendToWebview("acceptRejectDiff", AcceptRejectDiff(accepted, stepIndex), uuid())
+        project.getBrowser()?.sendToWebview("acceptRejectDiff", AcceptRejectDiff(accepted, stepIndex))
     }
 
 
     fun deleteAtIndex(index: Int) {
-        continuePluginService.sendToWebview("deleteAtIndex", DeleteAtIndex(index), uuid())
+        project.getBrowser()?.sendToWebview("deleteAtIndex", DeleteAtIndex(index))
     }
 }

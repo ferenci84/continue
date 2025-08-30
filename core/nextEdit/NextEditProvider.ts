@@ -1,6 +1,6 @@
-import * as path from "path";
+import { v4 as uuidv4 } from "uuid";
 import { ConfigHandler } from "../config/ConfigHandler.js";
-import { ChatMessage, IDE, ILLM } from "../index.js";
+import { ChatMessage, IDE, ILLM, Range, RangeInFile } from "../index.js";
 import OpenAI from "../llm/llms/OpenAI.js";
 import { DEFAULT_AUTOCOMPLETE_OPTS } from "../util/parameters.js";
 
@@ -10,24 +10,30 @@ import { BracketMatchingService } from "../autocomplete/filtering/BracketMatchin
 import { CompletionStreamer } from "../autocomplete/generation/CompletionStreamer.js";
 import { shouldPrefilter } from "../autocomplete/prefiltering/index.js";
 import { getAllSnippetsWithoutRace } from "../autocomplete/snippets/index.js";
+import { AutocompleteCodeSnippet } from "../autocomplete/snippets/types.js";
 import { GetLspDefinitionsFunction } from "../autocomplete/types.js";
+import { getAst } from "../autocomplete/util/ast.js";
 import { AutocompleteDebouncer } from "../autocomplete/util/AutocompleteDebouncer.js";
 import AutocompleteLruCache from "../autocomplete/util/AutocompleteLruCache.js";
 import { HelperVars } from "../autocomplete/util/HelperVars.js";
 import { AutocompleteInput } from "../autocomplete/util/types.js";
-import { replaceEscapedCharacters } from "../util/text.js";
-import {
-  NEXT_EDIT_EDITABLE_REGION_BOTTOM_MARGIN,
-  NEXT_EDIT_EDITABLE_REGION_TOP_MARGIN,
-} from "./constants.js";
+import { isSecurityConcern } from "../indexing/ignore.js";
+import { modelSupportsNextEdit } from "../llm/autodetect.js";
+import { countTokens } from "../llm/countTokens.js";
+import { localPathOrUriToPath } from "../util/pathToUri.js";
+import { createDiff, DiffFormatType } from "./context/diffFormatting.js";
+import { DocumentHistoryTracker } from "./DocumentHistoryTracker.js";
 import { NextEditLoggingService } from "./NextEditLoggingService.js";
+import { PrefetchQueue } from "./NextEditPrefetchQueue.js";
+import { NextEditProviderFactory } from "./NextEditProviderFactory.js";
+import { BaseNextEditProvider } from "./providers/BaseNextEditProvider.js";
 import {
-  renderDefaultSystemPrompt,
-  renderDefaultUserPrompt,
-  renderPrompt,
-} from "./templating/NextEditPromptEngine.js";
-import { NextEditOutcome, Prompt, PromptMetadata } from "./types.js";
-// import { renderPrompt } from "./templating/NextEditPromptEngine.js";
+  ModelSpecificContext,
+  NextEditOutcome,
+  Prompt,
+  PromptMetadata,
+  RecentlyEditedRange,
+} from "./types.js";
 
 const autocompleteCache = AutocompleteLruCache.get();
 
@@ -50,8 +56,16 @@ export class NextEditProvider {
   private loggingService: NextEditLoggingService;
   private contextRetrievalService: ContextRetrievalService;
   private endpointType: "default" | "fineTuned";
-  private diffContext: string = "";
+  private diffContext: string[] = [];
+  private autocompleteContext: string = "";
   private promptMetadata: PromptMetadata | null = null;
+  private currentEditChainId: string | null = null;
+  private previousRequest: AutocompleteInput | null = null;
+  private previousCompletions: NextEditOutcome[] = [];
+  // private nextEditableRegionsInTheCurrentChain: RangeInFile[] = [];
+
+  // Model-specific provider instance.
+  private modelProvider: BaseNextEditProvider | null = null;
 
   private constructor(
     private readonly configHandler: ConfigHandler,
@@ -98,7 +112,14 @@ export class NextEditProvider {
   }
 
   public addDiffToContext(diff: string): void {
-    this.diffContext = diff;
+    this.diffContext.push(diff);
+    if (this.diffContext.length > 5) {
+      this.diffContext.shift();
+    }
+  }
+
+  public addAutocompleteContext(ctx: string): void {
+    this.autocompleteContext = ctx;
   }
 
   private async _prepareLlm(): Promise<ILLM | undefined> {
@@ -185,169 +206,464 @@ export class NextEditProvider {
     return options;
   }
 
+  public chainExists(): boolean {
+    return this.currentEditChainId !== null;
+  }
+
+  public getChainLength(): number {
+    return this.previousCompletions.length;
+  }
+
+  public getPreviousCompletion(): NextEditOutcome | null {
+    return this.previousCompletions[0];
+  }
+
+  public async deleteChain(): Promise<void> {
+    PrefetchQueue.getInstance().abort();
+
+    this.currentEditChainId = null;
+    this.previousCompletions = [];
+    // TODO: this should be cleaned up in the prefetch queue.
+    // this.nextEditableRegionsInTheCurrentChain = [];
+
+    if (this.previousRequest) {
+      const fileContent = (
+        await this.ide.readFile(this.previousRequest.filepath)
+      ).toString();
+      const ast = await getAst(this.previousRequest.filepath, fileContent);
+      if (ast) {
+        DocumentHistoryTracker.getInstance().push(
+          localPathOrUriToPath(this.previousRequest.filepath),
+          fileContent,
+          ast,
+        );
+      }
+    }
+  }
+
+  public startChain(id?: string) {
+    this.currentEditChainId = id ?? uuidv4();
+  }
+
+  public getChain() {
+    return this.previousCompletions;
+  }
+
+  public isStartOfChain() {
+    return this.previousCompletions.length === 1;
+  }
+
   public async provideInlineCompletionItems(
     input: AutocompleteInput,
     token: AbortSignal | undefined,
+    opts?: {
+      withChain: boolean;
+      usingFullFileDiff: boolean;
+    },
   ): Promise<NextEditOutcome | undefined> {
+    if (isSecurityConcern(input.filepath)) {
+      return undefined;
+    }
     try {
-      // Create abort signal if not given
-      if (!token) {
-        const controller = this.loggingService.createAbortController(
-          input.completionId,
-        );
-        token = controller.signal;
-      }
-      const startTime = Date.now();
-      const options = await this._getAutocompleteOptions();
+      this.previousRequest = input;
+      const {
+        token: abortToken,
+        startTime,
+        helper,
+      } = await this._initializeCompletionRequest(input, token);
+      if (!helper) return undefined;
 
-      // Debounce
-      if (await this.debouncer.delayAndShouldDebounce(options.debounceDelay)) {
-        return undefined;
-      }
-
-      const llm = await this._prepareLlm();
-      if (!llm) {
-        return undefined;
-      }
-
-      if (llm.promptTemplates?.autocomplete) {
-        options.template = llm.promptTemplates.autocomplete as string;
-      }
-
-      const helper = await HelperVars.create(
-        input,
-        options,
-        llm.model,
-        this.ide,
+      // Create model-specific provider based on the model name.
+      this.modelProvider = NextEditProviderFactory.createProvider(
+        helper.modelName,
       );
 
-      if (await shouldPrefilter(helper, this.ide)) {
-        return undefined;
-      }
+      const { editableRegionStartLine, editableRegionEndLine, prompts } =
+        await this._generatePrompts(helper, opts);
 
-      const [snippetPayload, workspaceDirs] = await Promise.all([
-        getAllSnippetsWithoutRace({
-          helper,
-          ide: this.ide,
-          getDefinitionsFromLsp: this.getDefinitionsFromLsp,
-          contextRetrievalService: this.contextRetrievalService,
-        }),
-        this.ide.getWorkspaceDirs(),
-      ]);
-
-      // TODO: Toggle between the default endpoint and the finetuned endpoint.
-      const prompts: Prompt[] = [];
-      if (this.endpointType === "default") {
-        prompts.push(renderDefaultSystemPrompt());
-        prompts.push(renderDefaultUserPrompt(snippetPayload, helper));
-      } else {
-        const promptMetadata = renderPrompt(helper, this.diffContext);
-        this.promptMetadata = promptMetadata;
-        prompts.push(promptMetadata.prompt);
-      }
-
-      if (this.endpointType === "default") {
-        const msg: ChatMessage = await llm.chat(prompts, token);
-        if (typeof msg.content === "string") {
-          const nextCompletion = JSON.parse(msg.content).newCode;
-          const outcomeNext: NextEditOutcome = {
-            elapsed: Date.now() - startTime,
-            modelProvider: llm.underlyingProviderName,
-            modelName: llm.model + ":zetaDataset",
-            completionOptions: null,
-            // filepath: helper.filepath,
-            completionId: helper.input.completionId,
-            gitRepo: await this.ide.getRepoName(helper.filepath),
-            uniqueId: await this.ide.getUniqueId(),
-            timestamp: Date.now(),
-            fileUri: helper.filepath,
-            workspaceDirUri:
-              helper.workspaceUris[0] ?? path.dirname(helper.filepath),
-            prompt: prompts.join("\n"),
-            userEdits: "",
-            userExcerpts: "",
-            originalEditableRange: "",
-            completion: nextCompletion,
-            cursorPosition: helper.pos,
-            ...helper.options,
-          };
-
-          // When using the JetBrains extension, mark as displayed.
-          // This helps us not need to make additional network calls just to mark as displayed.
-          const ideType = (await this.ide.getIdeInfo()).ideType;
-          if (ideType === "jetbrains") {
-            this.markDisplayed(input.completionId, outcomeNext);
-          }
-
-          return outcomeNext;
-        } else {
-          return undefined;
-        }
-      } else {
-        const msg: ChatMessage = await llm.chat(prompts, token);
-
-        if (typeof msg.content === "string") {
-          // NOTE: There are cases where msg.conetnt.split("<|start|>")[1] is undefined
-          const nextCompletion = msg.content.split(
-            "<|editable_region_start|>\n",
-          )[1]
-            ? replaceEscapedCharacters(
-                msg.content.split("<|editable_region_start|>\n")[1],
-              ).replace(/\n$/, "")
-            : "";
-
-          const currCursorPos = helper.pos;
-          const editableRegionStartLine = Math.max(
-            currCursorPos.line - NEXT_EDIT_EDITABLE_REGION_TOP_MARGIN,
-            0,
-          );
-          const editableRegionEndLine = Math.min(
-            currCursorPos.line + NEXT_EDIT_EDITABLE_REGION_BOTTOM_MARGIN,
-            helper.fileLines.length - 1,
-          );
-          const oldEditRangeSlice = helper.fileContents
-            .split("\n")
-            .slice(editableRegionStartLine, editableRegionEndLine + 1)
-            .join("\n");
-
-          const outcomeNext: NextEditOutcome = {
-            elapsed: Date.now() - startTime,
-            modelProvider: llm.underlyingProviderName,
-            modelName: llm.model + ":zetaDataset",
-            completionOptions: null,
-            // filepath: helper.filepath,
-            completionId: helper.input.completionId,
-            gitRepo: await this.ide.getRepoName(helper.filepath),
-            uniqueId: await this.ide.getUniqueId(),
-            timestamp: Date.now(),
-            fileUri: helper.filepath,
-            workspaceDirUri:
-              helper.workspaceUris[0] ?? path.dirname(helper.filepath),
-            prompt: this.promptMetadata!.prompt.content,
-            userEdits: this.promptMetadata!.userEdits,
-            userExcerpts: this.promptMetadata!.userExcerpts,
-            originalEditableRange: oldEditRangeSlice,
-            completion: nextCompletion,
-            cursorPosition: helper.pos,
-            ...helper.options,
-          };
-
-          // When using the JetBrains extension, mark as displayed.
-          // This helps us not need to make additional network calls just to mark as displayed.
-          const ideType = (await this.ide.getIdeInfo()).ideType;
-          if (ideType === "jetbrains") {
-            this.markDisplayed(input.completionId, outcomeNext);
-          }
-
-          return outcomeNext;
-        } else {
-          return undefined;
-        }
-      }
+      return await this._handleCompletion(
+        helper,
+        prompts,
+        abortToken,
+        startTime,
+        editableRegionStartLine,
+        editableRegionEndLine,
+        opts,
+      );
     } catch (e: any) {
       this.onError(e);
     } finally {
       this.loggingService.deleteAbortController(input.completionId);
     }
+  }
+
+  private async _initializeCompletionRequest(
+    input: AutocompleteInput,
+    token: AbortSignal | undefined,
+  ): Promise<{
+    token: AbortSignal;
+    startTime: number;
+    helper: HelperVars | undefined;
+  }> {
+    // Create abort signal if not given
+    if (!token) {
+      const controller = this.loggingService.createAbortController(
+        input.completionId,
+      );
+      token = controller.signal;
+    } else {
+      // Token was provided externally, just track the completion.
+      this.loggingService.trackPendingCompletion(input.completionId);
+    }
+
+    const startTime = Date.now();
+    const options = await this._getAutocompleteOptions();
+
+    // Debounce
+    if (await this.debouncer.delayAndShouldDebounce(options.debounceDelay)) {
+      return { token, startTime, helper: undefined };
+    }
+
+    const llm = await this._prepareLlm();
+    if (!llm) {
+      return { token, startTime, helper: undefined };
+    }
+
+    // Update pending completion with model info.
+    this.loggingService.updatePendingCompletion(input.completionId, {
+      modelName: llm.model,
+      modelProvider: llm.providerName,
+      filepath: input.filepath,
+    });
+
+    // Check model capabilities
+    if (!modelSupportsNextEdit(llm.capabilities, llm.model, llm.title)) {
+      console.error(`${llm.model} is not capable of next edit.`);
+      return { token, startTime, helper: undefined };
+    }
+
+    if (llm.promptTemplates?.autocomplete) {
+      options.template = llm.promptTemplates.autocomplete as string;
+    }
+
+    const helper = await HelperVars.create(input, options, llm.model, this.ide);
+
+    if (await shouldPrefilter(helper, this.ide)) {
+      return { token, startTime, helper: undefined };
+    }
+
+    return { token, startTime, helper };
+  }
+
+  private async _generatePrompts(
+    helper: HelperVars,
+    opts?: {
+      withChain: boolean;
+      usingFullFileDiff: boolean;
+    },
+  ): Promise<{
+    editableRegionStartLine: number;
+    editableRegionEndLine: number;
+    prompts: Prompt[];
+  }> {
+    if (!this.modelProvider) {
+      throw new Error("Model provider not initialized");
+    }
+
+    const [snippetPayload, workspaceDirs] = await Promise.all([
+      getAllSnippetsWithoutRace({
+        helper,
+        ide: this.ide,
+        getDefinitionsFromLsp: this.getDefinitionsFromLsp,
+        contextRetrievalService: this.contextRetrievalService,
+      }),
+      this.ide.getWorkspaceDirs(),
+    ]);
+
+    // Calculate editable region based on model and options.
+    const { editableRegionStartLine, editableRegionEndLine } =
+      this.modelProvider.calculateEditableRegion(
+        helper,
+        opts?.usingFullFileDiff ?? false,
+      );
+
+    // Build context for model-specific prompt generation.
+    const context: ModelSpecificContext = {
+      helper,
+      snippetPayload,
+      editableRegionStartLine,
+      editableRegionEndLine,
+      diffContext: this.diffContext,
+      autocompleteContext: this.autocompleteContext,
+      historyDiff: createDiff({
+        beforeContent:
+          DocumentHistoryTracker.getInstance().getMostRecentDocumentHistory(
+            localPathOrUriToPath(helper.filepath),
+          ) ?? "",
+        afterContent: helper.fileContents,
+        filePath: helper.filepath,
+        diffType: DiffFormatType.Unified,
+        contextLines: 3,
+      }),
+    };
+
+    const prompts = await this.modelProvider.generatePrompts(context);
+
+    this.promptMetadata = this.modelProvider.buildPromptMetadata(context);
+
+    return { editableRegionStartLine, editableRegionEndLine, prompts };
+  }
+
+  private async _handleCompletion(
+    helper: HelperVars,
+    prompts: Prompt[],
+    token: AbortSignal,
+    startTime: number,
+    editableRegionStartLine: number,
+    editableRegionEndLine: number,
+    opts?: {
+      withChain: boolean;
+      usingFullFileDiff: boolean;
+    },
+  ): Promise<NextEditOutcome | undefined> {
+    if (!this.modelProvider) {
+      throw new Error("Model provider not initialized");
+    }
+
+    const llm = await this._prepareLlm();
+    if (!llm) return undefined;
+
+    // Inject unique token if needed (for Mercury models).
+    if (this.modelProvider.shouldInjectUniqueToken()) {
+      const uniqueToken = this.modelProvider.getUniqueToken();
+      if (uniqueToken) {
+        const lastPrompt = prompts[prompts.length - 1];
+        if (lastPrompt && typeof lastPrompt.content === "string") {
+          lastPrompt.content += uniqueToken;
+        }
+      }
+    }
+
+    // Send prompts to LLM (using only user prompt for fine-tuned models).
+    const msg: ChatMessage = await llm.chat([prompts[1]], token, {
+      stream: false,
+    });
+
+    if (typeof msg.content !== "string") {
+      return undefined;
+    }
+
+    // Extract completion using model-specific logic.
+    const nextCompletion = this.modelProvider.extractCompletion(msg.content);
+
+    let outcome: NextEditOutcome | undefined;
+
+    // Handle based on diff type.
+    if (opts?.usingFullFileDiff === false || !opts?.usingFullFileDiff) {
+      outcome = await this.modelProvider.handlePartialFileDiff(
+        helper,
+        editableRegionStartLine,
+        editableRegionEndLine,
+        startTime,
+        llm,
+        nextCompletion,
+        this.promptMetadata!,
+        this.ide,
+      );
+    } else {
+      outcome = await this.modelProvider.handleFullFileDiff(
+        helper,
+        editableRegionStartLine,
+        editableRegionEndLine,
+        startTime,
+        llm,
+        nextCompletion,
+        this.promptMetadata!,
+        this.ide,
+      );
+    }
+
+    if (outcome) {
+      // Handle NextEditProvider-specific state
+      this.previousCompletions.push(outcome);
+
+      // Mark as displayed for JetBrains
+      await this._markDisplayedIfJetBrains(helper.input.completionId, outcome);
+    }
+
+    return outcome;
+  }
+
+  private _calculateOptimalEditableRegion(
+    helper: HelperVars,
+    heuristic: "fourChars" | "tokenizer" = "tokenizer",
+  ): {
+    editableRegionStartLine: number;
+    editableRegionEndLine: number;
+  } {
+    const cursorLine = helper.pos.line;
+    const fileLines = helper.fileLines;
+    const MAX_TOKENS = 512;
+
+    // Initialize with cursor line.
+    let editableRegionStartLine = cursorLine;
+    let editableRegionEndLine = cursorLine;
+
+    // Get initial content and token count.
+    let currentContent = fileLines[cursorLine];
+    let totalTokens =
+      heuristic === "tokenizer"
+        ? countTokens(currentContent, helper.modelName)
+        : Math.ceil(currentContent.length / 4);
+
+    // Expand outward alternating between adding lines above and below.
+    let addingAbove = true;
+
+    while (totalTokens < MAX_TOKENS) {
+      let addedLine = false;
+
+      if (addingAbove) {
+        // Try to add a line above.
+        if (editableRegionStartLine > 0) {
+          editableRegionStartLine--;
+          const lineContent = fileLines[editableRegionStartLine];
+          const lineTokens =
+            heuristic === "tokenizer"
+              ? countTokens(lineContent, helper.modelName)
+              : Math.ceil(lineContent.length / 4);
+
+          totalTokens += lineTokens;
+          addedLine = true;
+        }
+      } else {
+        // Try to add a line below.
+        if (editableRegionEndLine < fileLines.length - 1) {
+          editableRegionEndLine++;
+          const lineContent = fileLines[editableRegionEndLine];
+          const lineTokens =
+            heuristic === "tokenizer"
+              ? countTokens(lineContent, helper.modelName)
+              : Math.ceil(lineContent.length / 4);
+
+          totalTokens += lineTokens;
+          addedLine = true;
+        }
+      }
+
+      // If we can't add in the current direction, try the other.
+      if (!addedLine) {
+        // If we're already at both file boundaries, we're done.
+        if (
+          editableRegionStartLine === 0 &&
+          editableRegionEndLine === fileLines.length - 1
+        ) {
+          break;
+        }
+
+        // If we couldn't add in one direction, force the next attempt in the other direction.
+        addingAbove = !addingAbove;
+        continue;
+      }
+
+      // If we exceeded the token limit, revert the last addition.
+      if (totalTokens > MAX_TOKENS) {
+        if (addingAbove) {
+          editableRegionStartLine++;
+        } else {
+          editableRegionEndLine--;
+        }
+        break;
+      }
+
+      // Alternate between adding above and below for balanced context.
+      addingAbove = !addingAbove;
+    }
+
+    return {
+      editableRegionStartLine,
+      editableRegionEndLine,
+    };
+  }
+
+  private async _markDisplayedIfJetBrains(
+    completionId: string,
+    outcome: NextEditOutcome,
+  ): Promise<void> {
+    const ideType = (await this.ide.getIdeInfo()).ideType;
+    if (ideType === "jetbrains") {
+      this.markDisplayed(completionId, outcome);
+    }
+  }
+
+  public async provideInlineCompletionItemsWithChain(
+    ctx: {
+      completionId: string;
+      manuallyPassFileContents?: string;
+      manuallyPassPrefix?: string;
+      selectedCompletionInfo?: {
+        text: string;
+        range: Range;
+      };
+      isUntitledFile: boolean;
+      recentlyVisitedRanges: AutocompleteCodeSnippet[];
+      recentlyEditedRanges: RecentlyEditedRange[];
+    },
+    nextEditLocation: RangeInFile,
+    token: AbortSignal | undefined,
+    usingFullFileDiff: boolean,
+  ) {
+    try {
+      const previousOutcome = this.getPreviousCompletion();
+      if (!previousOutcome) {
+        console.log("previousOutcome is undefined");
+        return undefined;
+      }
+
+      // Use the frontmost RangeInFile to build an input.
+      const input = this.buildAutocompleteInputFromChain(
+        previousOutcome,
+        nextEditLocation,
+        ctx,
+      );
+      if (!input) {
+        console.log("input is undefined");
+        return undefined;
+      }
+
+      return await this.provideInlineCompletionItems(input, token, {
+        withChain: true,
+        usingFullFileDiff,
+      });
+    } catch (e: any) {
+      this.onError(e);
+    }
+  }
+
+  private buildAutocompleteInputFromChain(
+    previousOutcome: NextEditOutcome,
+    nextEditableRegion: RangeInFile,
+    ctx: {
+      completionId: string;
+      manuallyPassFileContents?: string;
+      manuallyPassPrefix?: string;
+      selectedCompletionInfo?: {
+        text: string;
+        range: Range;
+      };
+      isUntitledFile: boolean;
+      recentlyVisitedRanges: AutocompleteCodeSnippet[];
+      recentlyEditedRanges: RecentlyEditedRange[];
+    },
+  ): AutocompleteInput | undefined {
+    const input: AutocompleteInput = {
+      pos: {
+        line: nextEditableRegion.range.start.line,
+        character: nextEditableRegion.range.start.character,
+      },
+      filepath: previousOutcome.fileUri,
+      ...ctx,
+    };
+
+    return input;
   }
 }

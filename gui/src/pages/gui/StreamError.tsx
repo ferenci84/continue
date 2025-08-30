@@ -45,7 +45,7 @@ const StreamErrorDialog = ({ error }: StreamErrorProps) => {
   } = useMemo(() => analyzeError(error, selectedModel), [error, selectedModel]);
 
   const handleRefreshProfiles = () => {
-    void refreshProfiles();
+    void refreshProfiles("Clicked reload config from stream error dialog");
     dispatch(setShowDialog(false));
     dispatch(setDialogMessage(undefined));
   };
@@ -59,12 +59,7 @@ const StreamErrorDialog = ({ error }: StreamErrorProps) => {
   const checkKeysButton = apiKeyUrl ? (
     <GhostButton
       className="flex items-center"
-      onClick={() => {
-        ideMessenger.post("controlPlane/openUrl", {
-          path: apiKeyUrl,
-          orgSlug: undefined,
-        });
-      }}
+      onClick={() => ideMessenger.ide.openUrl(apiKeyUrl)}
     >
       <KeyIcon className="mr-1.5 h-3.5 w-3.5" />
       <span>View key</span>
@@ -201,9 +196,9 @@ const StreamErrorDialog = ({ error }: StreamErrorProps) => {
       <div className="flex flex-col gap-2">
         {session && selectedProfile && !isLocalProfile(selectedProfile) && (
           <div className="flex flex-col gap-1">
-            <span>{`If your hub secret values may have changed, refresh your assistants`}</span>
+            <span>{`If your hub secret values may have changed, refresh your agents`}</span>
             <SecondaryButton onClick={handleRefreshProfiles}>
-              Refresh assistant secrets
+              Refresh agent secrets
             </SecondaryButton>
           </div>
         )}
@@ -246,8 +241,6 @@ const StreamErrorDialog = ({ error }: StreamErrorProps) => {
       </div>
     );
   }
-
-  console.log({ message });
 
   return (
     <div className="flex flex-col gap-4 px-3 pb-3 pt-3">

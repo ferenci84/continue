@@ -2,15 +2,19 @@ import { resolveRelativePathInDir } from "../../util/ideUtils";
 import { getUriPathBasename } from "../../util/uri";
 
 import { ToolImpl } from ".";
+import { throwIfFileIsSecurityConcern } from "../../indexing/ignore";
 import { getStringArg } from "../parseArgs";
 import { throwIfFileExceedsHalfOfContext } from "./readFileLimit";
 
 export const readFileImpl: ToolImpl = async (args, extras) => {
   const filepath = getStringArg(args, "filepath");
+  throwIfFileIsSecurityConcern(filepath);
 
   const firstUriMatch = await resolveRelativePathInDir(filepath, extras.ide);
   if (!firstUriMatch) {
-    throw new Error(`Could not find file ${filepath}`);
+    throw new Error(
+      `File "${filepath}" does not exist. You might want to check the path and try again.`,
+    );
   }
   const content = await extras.ide.readFile(firstUriMatch);
 

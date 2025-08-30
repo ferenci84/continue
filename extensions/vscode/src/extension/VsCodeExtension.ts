@@ -42,9 +42,22 @@ import { VsCodeIde } from "../VsCodeIde";
 import { ConfigYamlDocumentLinkProvider } from "./ConfigYamlDocumentLinkProvider";
 import { VsCodeMessenger } from "./VsCodeMessenger";
 
+import { getAst } from "core/autocomplete/util/ast";
+import { modelSupportsNextEdit } from "core/llm/autodetect";
+import { NEXT_EDIT_MODELS } from "core/llm/constants";
+import { DocumentHistoryTracker } from "core/nextEdit/DocumentHistoryTracker";
+import { NextEditProvider } from "core/nextEdit/NextEditProvider";
+import { isNextEditTest } from "core/nextEdit/utils";
+import { localPathOrUriToPath } from "core/util/pathToUri";
+import { JumpManager } from "../activation/JumpManager";
 import setupNextEditWindowManager, {
   NextEditWindowManager,
 } from "../activation/NextEditWindowManager";
+import {
+  HandlerPriority,
+  SelectionChangeManager,
+} from "../activation/SelectionChangeManager";
+import { GhostTextAcceptanceTracker } from "../autocomplete/GhostTextAcceptanceTracker";
 import { getDefinitionsFromLsp } from "../autocomplete/lsp";
 import { handleTextDocumentChange } from "../util/editLoggingUtils";
 import type { VsCodeWebviewProtocol } from "../webviewProtocol";
@@ -69,9 +82,94 @@ export class VsCodeExtension {
   private uriHandler = new UriEventHandler();
   private completionProvider: ContinueCompletionProvider;
 
+  private ARBITRARY_TYPING_DELAY = 2000;
+
+  private async updateNextEditState(
+    context: vscode.ExtensionContext,
+  ): Promise<void> {
+    const { config: continueConfig } = await this.configHandler.loadConfig();
+    const autocompleteModel = continueConfig?.selectedModelByRole.autocomplete;
+    const vscodeConfig = vscode.workspace.getConfiguration(EXTENSION_NAME);
+
+    const modelSupportsNext =
+      autocompleteModel &&
+      modelSupportsNextEdit(
+        autocompleteModel.capabilities,
+        autocompleteModel.model,
+        autocompleteModel.title,
+      );
+
+    // Use smart defaults.
+    let nextEditEnabled = vscodeConfig.get<boolean>("enableNextEdit");
+    if (nextEditEnabled === undefined) {
+      // First time - set smart default.
+      nextEditEnabled = modelSupportsNext ?? false;
+      await vscodeConfig.update(
+        "enableNextEdit",
+        nextEditEnabled,
+        vscode.ConfigurationTarget.Global,
+      );
+    }
+
+    // Check if Next Edit is enabled but model doesn't support it.
+    if (
+      nextEditEnabled &&
+      !modelSupportsNext &&
+      !isNextEditTest() &&
+      process.env.CONTINUE_E2E_NON_NEXT_EDIT_TEST === "true"
+    ) {
+      vscode.window
+        .showWarningMessage(
+          `The current autocomplete model (${autocompleteModel?.title || "unknown"}) does not support Next Edit.`,
+          "Disable Next Edit",
+          "Select different model",
+        )
+        .then((selection) => {
+          if (selection === "Disable Next Edit") {
+            vscodeConfig.update(
+              "enableNextEdit",
+              false,
+              vscode.ConfigurationTarget.Global,
+            );
+          } else if (selection === "Select different model") {
+            vscode.commands.executeCommand(
+              "continue.openTabAutocompleteConfigMenu",
+            );
+          }
+        });
+    }
+
+    const shouldEnableNextEdit =
+      (modelSupportsNext && nextEditEnabled) || isNextEditTest();
+
+    if (shouldEnableNextEdit) {
+      await setupNextEditWindowManager(context);
+      this.activateNextEdit();
+      await NextEditWindowManager.freeTabAndEsc();
+
+      const jumpManager = JumpManager.getInstance();
+      jumpManager.registerSelectionChangeHandler();
+
+      const ghostTextAcceptanceTracker =
+        GhostTextAcceptanceTracker.getInstance();
+      ghostTextAcceptanceTracker.registerSelectionChangeHandler();
+
+      const nextEditWindowManager = NextEditWindowManager.getInstance();
+      nextEditWindowManager.registerSelectionChangeHandler();
+    } else {
+      NextEditWindowManager.clearInstance();
+      this.deactivateNextEdit();
+      await NextEditWindowManager.freeTabAndEsc();
+
+      JumpManager.clearInstance();
+      GhostTextAcceptanceTracker.clearInstance();
+    }
+  }
+
   constructor(context: vscode.ExtensionContext) {
     // Register auth provider
     this.workOsAuthProvider = new WorkOsAuthProvider(context, this.uriHandler);
+
     void this.workOsAuthProvider.refreshSessions();
     context.subscriptions.push(this.workOsAuthProvider);
 
@@ -87,6 +185,55 @@ export class VsCodeExtension {
     this.ideUtils = new VsCodeIdeUtils();
     this.extensionContext = context;
     this.windowId = uuidv4();
+
+    // Check if model supports next edit to determine if we should use full file diff.
+    const getUsingFullFileDiff = async () => {
+      const { config } = await this.configHandler.loadConfig();
+      const autocompleteModel = config?.selectedModelByRole.autocomplete;
+
+      if (!autocompleteModel) {
+        return false;
+      }
+
+      if (
+        !modelSupportsNextEdit(
+          autocompleteModel.capabilities,
+          autocompleteModel.model,
+          autocompleteModel.title,
+        )
+      ) {
+        return false;
+      }
+
+      if (autocompleteModel.model.includes(NEXT_EDIT_MODELS.INSTINCT)) {
+        return false;
+      }
+
+      return true;
+    };
+
+    const usingFullFileDiff = true;
+    const selectionManager = SelectionChangeManager.getInstance();
+    selectionManager.initialize(this.ide, usingFullFileDiff);
+
+    selectionManager.registerListener(
+      "typing",
+      async (e, state) => {
+        const timeSinceLastDocChange =
+          Date.now() - state.lastDocumentChangeTime;
+        if (
+          state.isTypingSession &&
+          timeSinceLastDocChange < this.ARBITRARY_TYPING_DELAY &&
+          !NextEditWindowManager.getInstance().hasAccepted()
+        ) {
+          console.log("VsCodeExtension: typing in progress, preserving chain");
+          return true;
+        }
+
+        return false;
+      },
+      HandlerPriority.NORMAL,
+    );
 
     // Dependencies of core
     let resolveVerticalDiffManager: any = undefined;
@@ -152,7 +299,11 @@ export class VsCodeExtension {
       ),
     );
 
-    void this.configHandler.loadConfig().then(({ config }) => {
+    void this.configHandler.loadConfig().then(async ({ config }) => {
+      const shouldUseFullFileDiff = await getUsingFullFileDiff();
+      this.completionProvider.updateUsingFullFileDiff(shouldUseFullFileDiff);
+      selectionManager.updateUsingFullFileDiff(shouldUseFullFileDiff);
+
       const { verticalDiffCodeLens } = registerAllCodeLensProviders(
         context,
         this.verticalDiffManager.fileUriToCodeLens,
@@ -165,17 +316,11 @@ export class VsCodeExtension {
 
     this.configHandler.onConfigUpdate(
       async ({ config: newConfig, configLoadInterrupted }) => {
-        if (newConfig?.experimental?.optInNextEditFeature) {
-          // Set up next edit window manager only for Continue team members
-          await setupNextEditWindowManager(context);
+        const shouldUseFullFileDiff = await getUsingFullFileDiff();
+        this.completionProvider.updateUsingFullFileDiff(shouldUseFullFileDiff);
+        selectionManager.updateUsingFullFileDiff(shouldUseFullFileDiff);
 
-          this.activateNextEdit();
-          await NextEditWindowManager.freeTabAndEsc();
-        } else {
-          NextEditWindowManager.clearInstance();
-          this.deactivateNextEdit();
-          await NextEditWindowManager.freeTabAndEsc();
-        }
+        await this.updateNextEditState(context);
 
         if (configLoadInterrupted) {
           // Show error in status bar
@@ -204,6 +349,7 @@ export class VsCodeExtension {
       this.configHandler,
       this.ide,
       this.sidebar.webviewProtocol,
+      usingFullFileDiff,
     );
     context.subscriptions.push(
       vscode.languages.registerInlineCompletionItemProvider(
@@ -219,6 +365,7 @@ export class VsCodeExtension {
       let orgId = queryParams.get("org_id");
 
       this.core.invoke("config/refreshProfiles", {
+        reason: "VS Code deep link",
         selectOrgId: orgId === "null" ? undefined : (orgId ?? undefined),
         selectProfileId:
           profileId === "null" ? undefined : (profileId ?? undefined),
@@ -311,6 +458,10 @@ export class VsCodeExtension {
     });
 
     vscode.workspace.onDidChangeTextDocument(async (event) => {
+      if (event.contentChanges.length > 0) {
+        selectionManager.documentChanged();
+      }
+
       const editInfo = await handleTextDocumentChange(
         event,
         this.configHandler,
@@ -346,6 +497,18 @@ export class VsCodeExtension {
       });
     });
 
+    vscode.workspace.onDidOpenTextDocument(async (event) => {
+      console.log("onDidOpenTextDocument");
+      const ast = await getAst(event.fileName, event.getText());
+      if (ast) {
+        DocumentHistoryTracker.getInstance().addDocument(
+          localPathOrUriToPath(event.fileName),
+          event.getText(),
+          ast,
+        );
+      }
+    });
+
     // When GitHub sign-in status changes, reload config
     vscode.authentication.onDidChangeSessions(async (e) => {
       const env = await getControlPlaneEnv(this.ide.getIdeSettings());
@@ -371,6 +534,18 @@ export class VsCodeExtension {
           this.configHandler.reloadConfig("Github sign-in status changed");
         }
       }
+    });
+
+    // Listen for editor changes to clean up decorations when editor closes.
+    vscode.window.onDidChangeVisibleTextEditors(async () => {
+      // If our active editor is no longer visible, clear decorations.
+      console.log("deleteChain called from onDidChangeVisibleTextEditors");
+      await NextEditProvider.getInstance().deleteChain();
+    });
+
+    // Listen for selection changes to hide tooltip when cursor moves.
+    vscode.window.onDidChangeTextEditorSelection(async (e) => {
+      await selectionManager.handleSelectionChange(e);
     });
 
     // Refresh index when branch is changed
@@ -437,6 +612,10 @@ export class VsCodeExtension {
       if (event.affectsConfiguration(EXTENSION_NAME)) {
         const settings = await this.ide.getIdeSettings();
         void this.core.invoke("config/ideSettingsUpdate", settings);
+
+        if (event.affectsConfiguration(`${EXTENSION_NAME}.enableNextEdit`)) {
+          await this.updateNextEditState(context);
+        }
       }
     });
   }

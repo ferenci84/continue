@@ -11,7 +11,7 @@ interface ApplyActionsProps {
   applyState?: ApplyState;
   onClickAccept: () => void;
   onClickReject: () => void;
-  onClickApply: () => void;
+  onClickApply?: () => void;
 }
 
 export function ApplyActions(props: ApplyActionsProps) {
@@ -23,7 +23,7 @@ export function ApplyActions(props: ApplyActionsProps) {
     case "streaming":
       return (
         <div className="bg-badge flex select-none items-center rounded pl-2 pr-1">
-          <span className="text-lightgray inline-flex w-min items-center gap-2 text-center text-xs">
+          <span className="text-lightgray inline-flex items-center gap-2 text-center text-xs">
             Applying
             <Spinner />
           </span>

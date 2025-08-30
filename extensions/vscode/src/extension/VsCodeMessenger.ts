@@ -30,6 +30,7 @@ import { showTutorial } from "../util/tutorial";
 import { getExtensionUri } from "../util/vscode";
 import { VsCodeIde } from "../VsCodeIde";
 import { VsCodeWebviewProtocol } from "../webviewProtocol";
+
 import { VsCodeExtension } from "./VsCodeExtension";
 
 type ToIdeOrWebviewFromCoreProtocol = ToIdeFromCoreProtocol &
@@ -240,6 +241,7 @@ export class VsCodeMessenger {
           prompt: stripImages(prompt),
           completion: fileAfterEdit ?? "",
           modelProvider: model.underlyingProviderName,
+          modelName: model.title ?? "",
           modelTitle: model.title ?? "",
           filepath: msg.data.range.filepath,
         },
@@ -390,6 +392,14 @@ export class VsCodeMessenger {
       return await ide.gotoDefinition(msg.data.location);
     });
 
+    this.onWebviewOrCore("getReferences", async (msg) => {
+      return await ide.getReferences(msg.data.location);
+    });
+
+    this.onWebviewOrCore("getDocumentSymbols", async (msg) => {
+      return await ide.getDocumentSymbols(msg.data.textDocumentIdentifier);
+    });
+
     this.onWebviewOrCore("getFileStats", async (msg) => {
       return await ide.getFileStats(msg.data.files);
     });
@@ -416,10 +426,6 @@ export class VsCodeMessenger {
 
     this.onWebviewOrCore("isTelemetryEnabled", async (msg) => {
       return await ide.isTelemetryEnabled();
-    });
-
-    this.onWebviewOrCore("getWorkspaceConfigs", async (msg) => {
-      return await ide.getWorkspaceConfigs();
     });
 
     this.onWebviewOrCore("getUniqueId", async (msg) => {

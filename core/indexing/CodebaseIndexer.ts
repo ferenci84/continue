@@ -10,12 +10,11 @@ import {
 import type { FromCoreProtocol, ToCoreProtocol } from "../protocol";
 import type { IMessenger } from "../protocol/messenger";
 import { extractMinimalStackTraceInfo } from "../util/extractMinimalStackTraceInfo.js";
+import { Logger } from "../util/Logger.js";
 import { getIndexSqlitePath, getLanceDbPath } from "../util/paths.js";
-import { Telemetry } from "../util/posthog.js";
 import { findUriInDirs, getUriPathBasename } from "../util/uri.js";
 
 import { ConfigResult } from "@continuedev/config-yaml";
-import CodebaseContextProvider from "../context/providers/CodebaseContextProvider.js";
 import { ContinueServerClient } from "../continueServer/stubs/client";
 import { LLMError } from "../llm/index.js";
 import { getRootCause } from "../util/errors.js";
@@ -56,7 +55,7 @@ export class CodebaseIndexer {
   // and only need to `await` it for tests.
   public initPromise: Promise<void>;
   private config!: ContinueConfig;
-  private indexingCancellationController: AbortController | undefined;
+  private indexingCancellationController: AbortController;
   private codebaseIndexingState: IndexingProgressUpdate;
   private readonly pauseToken: PauseToken;
 
@@ -97,6 +96,9 @@ export class CodebaseIndexer {
     this.pauseToken = new PauseToken(initialPaused);
 
     this.initPromise = this.init(configHandler);
+
+    this.indexingCancellationController = new AbortController();
+    this.indexingCancellationController.abort(); // initialize and abort so that a new one can be created
   }
 
   // Initialization - load config and attach config listener
@@ -123,12 +125,20 @@ export class CodebaseIndexer {
     try {
       await fs.unlink(sqliteFilepath);
     } catch (error) {
+      // Capture indexer system failures to Sentry
+      Logger.error(error, {
+        filepath: sqliteFilepath,
+      });
       console.error(`Error deleting ${sqliteFilepath} folder: ${error}`);
     }
 
     try {
       await fs.rm(lanceDbFolder, { recursive: true, force: true });
     } catch (error) {
+      // Capture indexer system failures to Sentry
+      Logger.error(error, {
+        folderPath: lanceDbFolder,
+      });
       console.error(`Error deleting ${lanceDbFolder}: ${error}`);
     }
   }
@@ -325,7 +335,7 @@ export class CodebaseIndexer {
     if (config.disableIndexing) {
       yield {
         progress,
-        desc: "Indexing is disabled in config.json",
+        desc: "Indexing is disabled",
         status: "disabled",
       };
       return;
@@ -656,14 +666,6 @@ export class CodebaseIndexer {
       update.desc,
       update.debugInfo,
     );
-    void Telemetry.capture(
-      "indexing_error",
-      {
-        error: update.desc,
-        stack: update.debugInfo,
-      },
-      false,
-    );
   }
 
   /**
@@ -693,10 +695,12 @@ export class CodebaseIndexer {
   }
 
   public async refreshCodebaseIndex(paths: string[]) {
-    if (this.indexingCancellationController) {
+    if (!this.indexingCancellationController.signal.aborted) {
       this.indexingCancellationController.abort();
     }
-    this.indexingCancellationController = new AbortController();
+    const localController = new AbortController();
+    this.indexingCancellationController = localController;
+
     for await (const update of this.waitForDBIndex()) {
       this.updateProgress(update);
     }
@@ -710,7 +714,7 @@ export class CodebaseIndexer {
     try {
       for await (const update of this.refreshDirs(
         paths,
-        this.indexingCancellationController.signal,
+        localController.signal,
       )) {
         this.updateProgress(update);
 
@@ -732,18 +736,19 @@ export class CodebaseIndexer {
         providers: "all",
       });
     }
-    this.indexingCancellationController = undefined;
+    if (this.indexingCancellationController === localController) {
+      this.indexingCancellationController.abort();
+    }
   }
 
   public async refreshCodebaseIndexFiles(files: string[]) {
     // Can be cancelled by codebase index but not vice versa
-    if (
-      this.indexingCancellationController &&
-      !this.indexingCancellationController.signal.aborted
-    ) {
+    if (!this.indexingCancellationController.signal.aborted) {
       return;
     }
-    this.indexingCancellationController = new AbortController();
+    const localController = new AbortController();
+    this.indexingCancellationController = localController;
+
     try {
       for await (const update of this.refreshFiles(files)) {
         this.updateProgress(update);
@@ -763,7 +768,9 @@ export class CodebaseIndexer {
         providers: "all",
       });
     }
-    this.indexingCancellationController = undefined;
+    if (this.indexingCancellationController === localController) {
+      this.indexingCancellationController.abort();
+    }
   }
 
   public async handleIndexingError(e: any) {
@@ -787,11 +794,9 @@ export class CodebaseIndexer {
     return this.codebaseIndexingState;
   }
 
-  private hasCodebaseContextProvider() {
+  private hasIndexingContextProvider() {
     return !!this.config.contextProviders?.some(
-      (provider) =>
-        provider.description.title ===
-        CodebaseContextProvider.description.title,
+      ({ description: { dependsOnIndexing } }) => dependsOnIndexing,
     );
   }
 
@@ -809,13 +814,19 @@ export class CodebaseIndexer {
     config: newConfig,
   }: ConfigResult<ContinueConfig>) {
     if (newConfig) {
+      const ideSettings = await this.ide.getIdeSettings();
+      const pauseCodebaseIndexOnStart = ideSettings.pauseCodebaseIndexOnStart;
+      if (pauseCodebaseIndexOnStart) {
+        this.paused = true;
+      }
+
       const needsReindex = !this.isIndexingConfigSame(this.config, newConfig);
 
       this.config = newConfig; // IMPORTANT - need to set up top, other methods below use this without passing it in
 
       // No point in indexing if no codebase context provider
-      const hasCodebaseContextProvider = this.hasCodebaseContextProvider();
-      if (!hasCodebaseContextProvider) {
+      const hasIndexingProviders = this.hasIndexingContextProvider();
+      if (!hasIndexingProviders) {
         return;
       }
 
@@ -827,7 +838,7 @@ export class CodebaseIndexer {
 
       if (needsReindex) {
         const dirs = await this.ide.getWorkspaceDirs();
-        await this.refreshCodebaseIndex(dirs);
+        void this.refreshCodebaseIndex(dirs);
       }
     }
   }
