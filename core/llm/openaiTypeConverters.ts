@@ -4,6 +4,7 @@ import {
   ChatCompletionAssistantMessageParam,
   ChatCompletionChunk,
   ChatCompletionCreateParams,
+  ChatCompletionMessage,
   ChatCompletionMessageParam,
   CompletionCreateParams,
 } from "openai/resources/index";
@@ -90,7 +91,9 @@ export function toChatBody(
   options: CompletionOptions,
 ): ChatCompletionCreateParams {
   const params: ChatCompletionCreateParams = {
-    messages: messages.map(toChatMessage).filter((m) => m !== null),
+    messages: messages
+      .map(toChatMessage)
+      .filter((m) => m !== null) as ChatCompletionMessageParam[],
     model: options.model,
     max_tokens: options.maxTokens,
     temperature: options.temperature,
@@ -156,11 +159,25 @@ export function toFimBody(
   } as any;
 }
 
-export function fromChatResponse(response: ChatCompletion): ChatMessage {
-  const message = response.choices[0].message;
+export function fromChatResponse(response: ChatCompletion): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  const message = response.choices[0].message as ChatCompletionMessage & {
+    reasoning?: string;
+    reasoning_content?: string;
+  };
+
+  // Check for reasoning content first (similar to fromChatCompletionChunk)
+  if (message.reasoning_content || message.reasoning) {
+    messages.push({
+      role: "thinking",
+      content: (message as any).reasoning_content || (message as any).reasoning,
+    });
+  }
+
+  // Then add the assistant message
   const toolCall = message.tool_calls?.[0];
   if (toolCall) {
-    return {
+    messages.push({
       role: "assistant",
       content: "",
       toolCalls: message.tool_calls
@@ -173,19 +190,26 @@ export function fromChatResponse(response: ChatCompletion): ChatMessage {
             arguments: (tc as any).function?.arguments,
           },
         })),
-    };
+    });
+  } else {
+    messages.push({
+      role: "assistant",
+      content: message.content ?? "",
+    });
   }
 
-  return {
-    role: "assistant",
-    content: message.content ?? "",
-  };
+  return messages;
 }
 
 export function fromChatCompletionChunk(
   chunk: ChatCompletionChunk,
 ): ChatMessage | undefined {
-  const delta = chunk.choices?.[0]?.delta;
+  const delta = chunk.choices?.[0]?.delta as
+    | (ChatCompletionChunk.Choice.Delta & {
+        reasoning?: string;
+        reasoning_content?: string;
+      })
+    | undefined;
 
   if (delta?.content) {
     return {
@@ -211,7 +235,7 @@ export function fromChatCompletionChunk(
         toolCalls,
       };
     }
-  } else if ((delta as any)?.reasoning_content || (delta as any)?.reasoning) {
+  } else if (delta?.reasoning_content || delta?.reasoning) {
     return {
       role: "thinking",
       content: (delta as any)?.reasoning_content || (delta as any)?.reasoning,
