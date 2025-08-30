@@ -119,7 +119,6 @@ export const autocompleteOptionsSchema = z.object({
   maxSuffixPercentage: z.number().optional(),
   prefixPercentage: z.number().optional(),
   template: z.string().optional(),
-  useCache: z.boolean().optional(),
   onlyMyCode: z.boolean().optional(),
   useCache: z.boolean().optional(),
   useImports: z.boolean().optional(),
