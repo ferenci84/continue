@@ -73,7 +73,7 @@ export function toChatMessage(
     // see: https://openrouter.ai/docs/use-cases/reasoning-tokens#preserving-reasoning-blocks
     if (
       prevMessage?.role === "thinking" &&
-      (prevMessage.signature || options.preserveReasoning)
+      options.preserveReasoning !== false
     ) {
       msg.reasoning = prevMessage.content as string;
 
@@ -88,6 +88,16 @@ export function toChatMessage(
           : undefined);
 
       msg.reasoning_details = reasoningDetails || [];
+
+      if (
+        options.model.includes("claude") &&
+        !msg.reasoning_details.some((detail) => detail.signature)
+      ) {
+        console.warn("No signature found in reasoning details");
+        // Remove reasoning if no signature is present and calling claude models
+        delete msg.reasoning;
+        msg.reasoning_details = [];
+      }
     }
 
     return msg as ChatCompletionMessageParam;
@@ -315,14 +325,11 @@ export function mergeReasoningDetails(
   if (!delta) return existing;
   if (!existing) return delta;
 
-  console.log("merging reasoning details", existing, delta);
-
   const result = [...existing];
 
   for (const deltaItem of delta) {
     // Skip items without a type
     if (!deltaItem.type) {
-      console.warn("Delta item missing type field, skipping:", deltaItem);
       continue;
     }
 
