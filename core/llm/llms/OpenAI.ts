@@ -18,6 +18,10 @@ import {
   LlmApiRequestType,
   toChatBody,
 } from "../openaiTypeConverters.js";
+import {
+  ResponseInput,
+  ResponseInputItem,
+} from "openai/resources/responses/responses.mjs";
 
 const NON_CHAT_MODELS = [
   "text-davinci-002",
@@ -48,6 +52,28 @@ const formatMessageForO1OrGpt5 = (messages: ChatCompletionMessageParam[]) => {
 
     return message;
   });
+};
+
+const formatMessageForO1OrGpt5ForResponses = (
+  messages: ChatCompletionMessageParam[],
+): ResponseInputItem[] => {
+  return messages
+    ?.map((message) => {
+      if (message?.role === "system") {
+        return {
+          ...message,
+          role: "developer",
+        };
+      }
+      if (message?.role === "user") {
+        return {
+          ...message,
+          role: "user",
+        };
+      }
+      return null;
+    })
+    .filter((v) => v !== null);
 };
 
 class OpenAI extends BaseLLM {
@@ -184,17 +210,9 @@ class OpenAI extends BaseLLM {
 
     // Map system->developer for o-series / gpt-5
     const model = chatBody.model as string;
-    const mappedMessages = this.isOSeriesOrGpt5Model(model)
-      ? (formatMessageForO1OrGpt5(chatBody.messages as any) as any)
-      : (chatBody.messages as any);
-
-    const input = (mappedMessages || []).map((m: any) => ({
-      role: m.role,
-      content:
-        typeof m.content === "string"
-          ? [{ type: "text", text: m.content }]
-          : m.content,
-    }));
+    const input = formatMessageForO1OrGpt5ForResponses(
+      chatBody.messages as any,
+    );
 
     const body: any = {
       model,
