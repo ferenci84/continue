@@ -267,6 +267,8 @@ export function fromChatResponse(response: ChatCompletion): ChatMessage[] {
 export function fromChatCompletionChunk(
   chunk: ChatCompletionChunk,
 ): ChatMessage | undefined {
+  console.log("chunk", chunk);
+
   const delta = chunk.choices?.[0]?.delta as
     | (ChatCompletionChunk.Choice.Delta & {
         reasoning?: string;
@@ -315,6 +317,63 @@ export function fromChatCompletionChunk(
     return message;
   }
 
+  return undefined;
+}
+
+export function fromResponsesChunk(event: any): ChatMessage | undefined {
+  try {
+    // Streaming delta: response.output_text.delta or similar
+    if (event?.type && String(event.type).includes("response.output_text")) {
+      const delta = event.delta ?? event.text ?? event?.value ?? "";
+      if (typeof delta === "string" && delta.length) {
+        return { role: "assistant", content: delta };
+      }
+      if (
+        delta &&
+        typeof delta === "object" &&
+        typeof delta.text === "string"
+      ) {
+        return { role: "assistant", content: delta.text };
+      }
+    }
+
+    // Final JSON: output_text
+    if (typeof event?.output_text === "string") {
+      return { role: "assistant", content: event.output_text };
+    }
+
+    // Final JSON: output array with content parts
+    if (Array.isArray(event?.output) && event.output.length > 0) {
+      const first = event.output[0];
+      if (Array.isArray(first.content) && first.content.length > 0) {
+        const text = first.content
+          .map((c: any) => c?.text ?? "")
+          .filter((t: any) => typeof t === "string")
+          .join("");
+        if (text) return { role: "assistant", content: text };
+      }
+      if (typeof first.content === "string") {
+        return { role: "assistant", content: first.content };
+      }
+    }
+
+    // Nested result fields
+    if (typeof event?.result?.output_text === "string") {
+      return { role: "assistant", content: event.result.output_text };
+    }
+    if (
+      Array.isArray(event?.result?.output) &&
+      event.result.output.length > 0
+    ) {
+      const first = event.result.output[0];
+      if (Array.isArray(first.content)) {
+        const text = first.content.map((c: any) => c?.text ?? "").join("");
+        if (text) return { role: "assistant", content: text };
+      }
+    }
+  } catch (e) {
+    // ignore parse errors in minimal implementation
+  }
   return undefined;
 }
 

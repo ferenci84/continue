@@ -14,6 +14,7 @@ import { renderChatMessage } from "../../util/messageContent.js";
 import { BaseLLM } from "../index.js";
 import {
   fromChatCompletionChunk,
+  fromResponsesChunk,
   LlmApiRequestType,
   toChatBody,
 } from "../openaiTypeConverters.js";
@@ -171,6 +172,54 @@ class OpenAI extends BaseLLM {
     return finalOptions;
   }
 
+  protected _convertArgsResponses(
+    options: CompletionOptions,
+    messages: ChatMessage[],
+  ): any {
+    // Start from chat-style body to reuse shared option mapping
+    const chatBody = toChatBody(messages, options);
+
+    // Enforce stop token limits similar to chat path
+    const stop = options.stop?.slice(0, this.getMaxStopWords());
+
+    // Map system->developer for o-series / gpt-5
+    const model = chatBody.model as string;
+    const mappedMessages = this.isOSeriesOrGpt5Model(model)
+      ? (formatMessageForO1OrGpt5(chatBody.messages as any) as any)
+      : (chatBody.messages as any);
+
+    const input = (mappedMessages || []).map((m: any) => ({
+      role: m.role,
+      content:
+        typeof m.content === "string"
+          ? [{ type: "text", text: m.content }]
+          : m.content,
+    }));
+
+    const body: any = {
+      model,
+      input,
+      // Common generation controls carried over for parity
+      temperature: chatBody.temperature,
+      top_p: chatBody.top_p,
+      frequency_penalty: chatBody.frequency_penalty,
+      presence_penalty: chatBody.presence_penalty,
+      stop,
+    };
+
+    // Responses API expects max_output_tokens
+    if (typeof options.maxTokens === "number") {
+      body.max_output_tokens = options.maxTokens;
+    }
+
+    // o1 models do not support streaming
+    if (model === "o1") {
+      body.stream = false;
+    }
+
+    return body;
+  }
+
   protected _getHeaders() {
     return {
       "Content-Type": "application/json",
@@ -197,7 +246,7 @@ class OpenAI extends BaseLLM {
   }
 
   protected _getEndpoint(
-    endpoint: "chat/completions" | "completions" | "models",
+    endpoint: "chat/completions" | "completions" | "models" | "responses",
   ) {
     if (!this.apiBase) {
       throw new Error(
@@ -366,6 +415,83 @@ class OpenAI extends BaseLLM {
         yield chunk;
       }
     }
+  }
+
+  // Minimal draft: Responses API support for select models
+  protected async *_streamResponses(
+    messages: ChatMessage[],
+    signal: AbortSignal,
+    options: CompletionOptions,
+  ): AsyncGenerator<ChatMessage> {
+    if (!this.isOSeriesOrGpt5Model(options.model)) {
+      return;
+    }
+
+    const body: any = this._convertArgsResponses(options, messages);
+
+    // o1 does not support streaming
+    if (body.model === "o1") {
+      const single = await this._responses(messages, signal, options);
+      if (single) {
+        yield single;
+      }
+      return;
+    }
+
+    const response = await this.fetch(this._getEndpoint("responses"), {
+      method: "POST",
+      headers: this._getHeaders(),
+      body: JSON.stringify({
+        ...body,
+        stream: true,
+        ...this.extraBodyProperties(),
+      }),
+      signal,
+    });
+
+    for await (const evt of streamSse(response)) {
+      try {
+        const msg = fromResponsesChunk(evt);
+        if (msg) {
+          yield msg;
+        }
+      } catch {
+        // ignore malformed chunks
+      }
+    }
+  }
+
+  protected async _responses(
+    messages: ChatMessage[],
+    signal: AbortSignal,
+    options: CompletionOptions,
+  ): Promise<ChatMessage> {
+    if (!this.isOSeriesOrGpt5Model(options.model)) {
+      // Minimal draft: only handle supported models for now
+      return { role: "assistant", content: "" };
+    }
+
+    const body: any = this._convertArgsResponses(options, messages);
+
+    const response = await this.fetch(this._getEndpoint("responses"), {
+      method: "POST",
+      headers: this._getHeaders(),
+      body: JSON.stringify({
+        ...body,
+        stream: false,
+        ...this.extraBodyProperties(),
+      }),
+      signal,
+    });
+
+    if ((response as any).status === 499) {
+      return { role: "assistant", content: "" };
+    }
+
+    const data: any = await response.json().catch(() => ({}));
+    const msg = fromResponsesChunk(data);
+    if (msg) return msg;
+    return { role: "assistant", content: "" };
   }
 
   protected async *_streamFim(
