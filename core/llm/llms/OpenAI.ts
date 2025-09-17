@@ -21,6 +21,7 @@ import {
 import {
   ResponseInput,
   ResponseInputItem,
+  ResponseInputMessageContentList,
 } from "openai/resources/responses/responses.mjs";
 
 const NON_CHAT_MODELS = [
@@ -57,23 +58,134 @@ const formatMessageForO1OrGpt5 = (messages: ChatCompletionMessageParam[]) => {
 const formatMessageForO1OrGpt5ForResponses = (
   messages: ChatCompletionMessageParam[],
 ): ResponseInputItem[] => {
-  return messages
-    ?.map((message) => {
-      if (message?.role === "system") {
-        return {
-          ...message,
-          role: "developer",
-        };
+  const input: ResponseInputItem[] = [];
+
+  const pushMessage = (
+    role: "user" | "assistant" | "system" | "developer",
+    content: string | ResponseInputMessageContentList,
+  ) => {
+    // o-series / gpt-5 use `developer` instead of `system`
+    const normalizedRole: "user" | "assistant" | "system" | "developer" =
+      role === "system" ? "developer" : role;
+
+    input.push({ role: normalizedRole, content });
+  };
+
+  for (const message of messages) {
+    switch (message.role) {
+      case "system":
+      case "developer": {
+        const content = message.content;
+        if (typeof content === "string") {
+          pushMessage("developer", content);
+        } else if (Array.isArray(content)) {
+          const parts: ResponseInputMessageContentList = content
+            .filter(
+              (p): p is { type: "text"; text: string } => p.type === "text",
+            )
+            .map((p) => ({ type: "input_text" as const, text: p.text }));
+          pushMessage("developer", parts.length ? parts : "");
+        }
+        break;
       }
-      if (message?.role === "user") {
-        return {
-          ...message,
-          role: "user",
-        };
+
+      case "user": {
+        const content = message.content;
+        if (typeof content === "string") {
+          pushMessage("user", content);
+        } else if (Array.isArray(content)) {
+          const parts: ResponseInputMessageContentList = [];
+          for (const part of content) {
+            if (part.type === "text") {
+              parts.push({ type: "input_text", text: part.text });
+            } else if (part.type === "image_url") {
+              parts.push({
+                type: "input_image",
+                image_url: part.image_url.url,
+                detail: part.image_url.detail ?? "auto",
+              });
+            } else if (part.type === "file") {
+              parts.push({
+                type: "input_file",
+                file_data: part.file.file_data,
+                file_id: part.file.file_id ?? undefined,
+                filename: part.file.filename,
+              });
+            }
+          }
+          if (parts.length) {
+            pushMessage("user", parts);
+          }
+        }
+        break;
       }
-      return null;
-    })
-    .filter((v) => v !== null);
+
+      case "assistant": {
+        const content = message.content;
+        if (typeof content === "string") {
+          if (content.length) pushMessage("assistant", content);
+        } else if (Array.isArray(content)) {
+          const text = content
+            .filter(
+              (p): p is { type: "text"; text: string } => p.type === "text",
+            )
+            .map((p) => p.text)
+            .join("");
+          if (text.length) pushMessage("assistant", text);
+        }
+
+        if (Array.isArray(message.tool_calls)) {
+          for (const tc of message.tool_calls) {
+            if (tc.type === "function") {
+              input.push({
+                type: "function_call",
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+                call_id: tc.id,
+              });
+            } else if (tc.type === "custom") {
+              input.push({
+                type: "custom_tool_call",
+                name: tc.custom.name,
+                input: tc.custom.input,
+                call_id: tc.id,
+              });
+            }
+          }
+        }
+        break;
+      }
+
+      case "tool": {
+        const content = message.content;
+        const output =
+          typeof content === "string"
+            ? content
+            : content
+                .filter(
+                  (p): p is { type: "text"; text: string } => p.type === "text",
+                )
+                .map((p) => p.text)
+                .join("");
+        input.push({
+          type: "function_call_output",
+          call_id: message.tool_call_id,
+          output,
+        });
+        break;
+      }
+
+      case "function": {
+        // Deprecated in Chat Completions; no safe mapping into Responses input
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  return input;
 };
 
 class OpenAI extends BaseLLM {
@@ -210,9 +322,7 @@ class OpenAI extends BaseLLM {
 
     // Map system->developer for o-series / gpt-5
     const model = chatBody.model as string;
-    const input = formatMessageForO1OrGpt5ForResponses(
-      chatBody.messages as any,
-    );
+    const input = formatMessageForO1OrGpt5ForResponses(chatBody.messages);
 
     const body: any = {
       model,
