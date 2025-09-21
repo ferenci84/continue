@@ -580,7 +580,43 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
           typeof msg.content === "string"
             ? msg.content
             : (msg.content as any)?.map((p: any) => p.text || "").join("");
-        pushMessage("assistant", text || "");
+
+        const respId = (msg as any).responsesOutputItemId as string | undefined;
+        const toolCalls = (msg as any).toolCalls as any[] | undefined;
+
+        if (respId && Array.isArray(toolCalls) && toolCalls.length > 0) {
+          // Emit full function_call output item
+          const tc = toolCalls[0];
+          const name = tc?.function?.name as string | undefined;
+          const args = tc?.function?.arguments as string | undefined;
+          const call_id = tc?.id as string | undefined;
+          const functionCallItem: any = {
+            id: respId,
+            type: "function_call",
+            name: name || "",
+            arguments: typeof args === "string" ? args : "{}",
+            call_id: call_id || respId,
+          };
+          (input as any).push(functionCallItem);
+        } else if (respId) {
+          // Emit full assistant output message item
+          const outputMessageItem: any = {
+            id: respId,
+            role: "assistant",
+            type: "message",
+            status: "completed",
+            content: [
+              {
+                type: "output_text",
+                text: text || "",
+              },
+            ],
+          };
+          (input as any).push(outputMessageItem);
+        } else {
+          // Fallback to EasyInput assistant message
+          pushMessage("assistant", text || "");
+        }
         break;
       }
       case "tool": {
@@ -627,37 +663,6 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
               reasoningItem.encrypted_content = encrypted;
             }
             (input as any).push(reasoningItem);
-
-            // Try to pair with following assistant output item if present
-            const next = messages[i + 1] as any;
-            if (
-              next &&
-              next.role === "assistant" &&
-              typeof next.responsesOutputItemId === "string"
-            ) {
-              const textNext =
-                typeof next.content === "string"
-                  ? next.content
-                  : (next.content as any)
-                      ?.map((p: any) => p.text || "")
-                      .join("");
-
-              const outputMessageItem: any = {
-                id: next.responsesOutputItemId,
-                role: "assistant",
-                type: "message",
-                status: "completed",
-                content: [
-                  {
-                    type: "output_text",
-                    text: textNext || "",
-                  },
-                ],
-              };
-              (input as any).push(outputMessageItem);
-              i++; // consume the next assistant message so we don't add it again as EasyInput
-              break;
-            }
           }
         }
         break;
