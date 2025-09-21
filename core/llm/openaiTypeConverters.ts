@@ -20,6 +20,11 @@ import type {
   ResponseInput,
   ResponseInputItem,
   ResponseInputMessageContentList,
+  ResponseOutputMessage,
+  ResponseOutputText,
+  ResponseFunctionToolCall,
+  EasyInputMessage,
+  ResponseReasoningItem,
 } from "openai/resources/responses/responses.mjs";
 
 import {
@@ -27,6 +32,14 @@ import {
   CompletionOptions,
   TextMessagePart,
   ThinkingChatMessage,
+  ToolCallDelta,
+  AssistantChatMessage,
+  UserChatMessage,
+  SystemChatMessage,
+  ToolResultChatMessage,
+  MessageContent,
+  ImageMessagePart,
+  MessagePart,
 } from "..";
 
 export function toChatMessage(
@@ -127,11 +140,8 @@ export function toChatMessage(
     // that don't support multi-media format
     return {
       role: "user",
-      content: !message.content.some((item) => item.type !== "text")
-        ? message.content
-            .map((item) => (item as TextMessagePart).text)
-            .join("") || " "
-        : message.content.map((part) => {
+      content: message.content.some((item) => item.type !== "text")
+        ? message.content.map((part) => {
             if (part.type === "imageUrl") {
               return {
                 type: "image_url" as const,
@@ -142,7 +152,10 @@ export function toChatMessage(
               };
             }
             return part;
-          }),
+          })
+        : message.content
+            .map((item) => (item as TextMessagePart).text)
+            .join("") || " ",
     };
   }
 }
@@ -333,145 +346,157 @@ export function fromChatCompletionChunk(
   return undefined;
 }
 
-export function fromResponsesChunk(
-  event: ResponseStreamEvent | OpenAIResponse,
+function handleResponsesStreamEvent(
+  e: ResponseStreamEvent,
 ): ChatMessage | undefined {
-  // Streaming events are discriminated by a `type` string
-  if (typeof (event as any).type === "string") {
-    const e = event as ResponseStreamEvent;
-    switch (e.type) {
-      case "response.output_text.delta": {
-        const t = e as ResponseTextDeltaEvent;
-        if (t.delta) return { role: "assistant", content: t.delta };
-        break;
-      }
-      case "response.output_text.done": {
-        const t = e as ResponseTextDoneEvent;
-        if (t.text) return { role: "assistant", content: t.text };
-        break;
-      }
-      case "response.output_item.added": {
-        const t = e as any;
-        const item = (t.item as any) || {};
-        if (item.type === "reasoning") {
-          const details: any[] = [];
-          if (item.id) details.push({ type: "reasoning_id", id: item.id });
-          if (
-            typeof item.encrypted_content === "string" &&
-            item.encrypted_content
-          ) {
-            details.push({
-              type: "encrypted_content",
-              encrypted_content: item.encrypted_content,
-            });
-          }
-          if (Array.isArray(item.summary)) {
-            for (const part of item.summary) {
-              if (
-                part?.type === "summary_text" &&
-                typeof part.text === "string"
-              ) {
-                details.push({ type: "summary_text", text: part.text });
-              }
+  switch (e.type) {
+    case "response.output_text.delta": {
+      const t = e as ResponseTextDeltaEvent;
+      return t.delta ? { role: "assistant", content: t.delta } : undefined;
+    }
+    case "response.output_text.done": {
+      const t = e as ResponseTextDoneEvent;
+      return t.text ? { role: "assistant", content: t.text } : undefined;
+    }
+    case "response.output_item.added": {
+      const item = (e as any).item as {
+        type?: string;
+        id?: string;
+        name?: string;
+        arguments?: string;
+        call_id?: string;
+        summary?: Array<{ type: string; text: string }>;
+        encrypted_content?: string;
+      };
+      if (!item || !item.type) return undefined;
+      if (item.type === "reasoning") {
+        const details: Array<{ [k: string]: unknown }> = [];
+        if (item.id) details.push({ type: "reasoning_id", id: item.id });
+        if (
+          typeof item.encrypted_content === "string" &&
+          item.encrypted_content
+        ) {
+          details.push({
+            type: "encrypted_content",
+            encrypted_content: item.encrypted_content,
+          });
+        }
+        if (Array.isArray(item.summary)) {
+          for (const part of item.summary) {
+            if (
+              part?.type === "summary_text" &&
+              typeof part.text === "string"
+            ) {
+              details.push({ type: "summary_text", text: part.text });
             }
           }
-          return {
-            role: "thinking",
-            content: "",
-            reasoning_details: details,
-          } as ThinkingChatMessage;
         }
-        // capture assistant output message item id as soon as it's added
-        if (item.type === "message" && typeof item.id === "string") {
-          return {
-            role: "assistant",
-            content: "",
-            responsesOutputItemId: item.id,
-          } as any;
-        }
-        // capture function_call output item and surface as tool call stub
-        if (item.type === "function_call" && typeof item.id === "string") {
-          const name = item.name as string | undefined;
-          const args =
-            typeof item.arguments === "string" ? item.arguments : "{}";
-          const call_id = item.call_id as string | undefined;
-          const toolCall = name
-            ? [
-                {
-                  id: call_id || item.id,
-                  type: "function",
-                  function: { name, arguments: args },
-                },
-              ]
-            : [];
-          return {
-            role: "assistant",
-            content: "",
-            toolCalls: toolCall,
-            responsesOutputItemId: item.id,
-          } as any;
-        }
-        break;
-      }
-      case "response.reasoning_summary_text.delta": {
-        const r = e as ResponseReasoningSummaryTextDeltaEvent;
-        const details: any[] = [{ type: "summary_text", text: r.delta }];
-        if ((r as any).item_id)
-          details.push({ type: "reasoning_id", id: (r as any).item_id });
-        return {
+        const thinking: ThinkingChatMessage = {
           role: "thinking",
-          content: r.delta,
+          content: "",
           reasoning_details: details,
-        } as ThinkingChatMessage;
+          metadata: {
+            reasoningId: item.id as string,
+            encrypted_content: item.encrypted_content as string | undefined,
+          },
+        };
+        return thinking;
       }
-      case "response.reasoning_summary_text.done": {
-        const r = e as ResponseReasoningSummaryTextDoneEvent;
-        const details: any[] = [];
-        if (r.text) details.push({ type: "summary_text", text: r.text });
-        if ((r as any).item_id)
-          details.push({ type: "reasoning_id", id: (r as any).item_id });
+      if (item.type === "message" && typeof item.id === "string") {
         return {
-          role: "thinking",
-          content: r.text,
-          reasoning_details: details,
-        } as ThinkingChatMessage;
+          role: "assistant",
+          content: "",
+          metadata: { responsesOutputItemId: item.id },
+        };
       }
-      case "response.reasoning_text.delta": {
-        const r = e as ResponseReasoningTextDeltaEvent;
-        const details: any[] = [{ type: "reasoning_text", text: r.delta }];
-        if ((r as any).item_id)
-          details.push({ type: "reasoning_id", id: (r as any).item_id });
-        return {
-          role: "thinking",
-          content: r.delta,
-          reasoning_details: details,
-        } as ThinkingChatMessage;
+      if (item.type === "function_call" && typeof item.id === "string") {
+        const name = item.name as string | undefined;
+        const args = typeof item.arguments === "string" ? item.arguments : "{}";
+        const call_id = item.call_id as string | undefined;
+        const toolCalls: ToolCallDelta[] = name
+          ? [
+              {
+                id: call_id || (item.id as string),
+                type: "function",
+                function: { name, arguments: args },
+              },
+            ]
+          : [];
+        const assistant: AssistantChatMessage = {
+          role: "assistant",
+          content: "",
+          toolCalls,
+          metadata: { responsesOutputItemId: item.id as string },
+        };
+        return assistant;
       }
-      case "response.reasoning_text.done": {
-        const r = e as ResponseReasoningTextDoneEvent;
-        const details: any[] = [];
-        if (r.text) details.push({ type: "reasoning_text", text: r.text });
-        if ((r as any).item_id)
-          details.push({ type: "reasoning_id", id: (r as any).item_id });
-        return {
-          role: "thinking",
-          content: r.text,
-          reasoning_details: details,
-        } as ThinkingChatMessage;
-      }
-      default:
-        break;
+      return undefined;
     }
-    return undefined;
+    case "response.reasoning_summary_text.delta": {
+      const r = e as ResponseReasoningSummaryTextDeltaEvent;
+      const details: Array<{ [k: string]: unknown }> = [
+        { type: "summary_text", text: r.delta },
+      ];
+      if ((r as any).item_id)
+        details.push({ type: "reasoning_id", id: (r as any).item_id });
+      const thinking: ThinkingChatMessage = {
+        role: "thinking",
+        content: r.delta,
+        reasoning_details: details,
+      };
+      return thinking;
+    }
+    case "response.reasoning_summary_text.done": {
+      const r = e as ResponseReasoningSummaryTextDoneEvent;
+      const details: Array<{ [k: string]: unknown }> = [];
+      if (r.text) details.push({ type: "summary_text", text: r.text });
+      if ((r as any).item_id)
+        details.push({ type: "reasoning_id", id: (r as any).item_id });
+      const thinking: ThinkingChatMessage = {
+        role: "thinking",
+        content: r.text,
+        reasoning_details: details,
+      };
+      return thinking;
+    }
+    case "response.reasoning_text.delta": {
+      const r = e as ResponseReasoningTextDeltaEvent;
+      const details: Array<{ [k: string]: unknown }> = [
+        { type: "reasoning_text", text: r.delta },
+      ];
+      if ((r as any).item_id)
+        details.push({ type: "reasoning_id", id: (r as any).item_id });
+      const thinking: ThinkingChatMessage = {
+        role: "thinking",
+        content: r.delta,
+        reasoning_details: details,
+      };
+      return thinking;
+    }
+    case "response.reasoning_text.done": {
+      const r = e as ResponseReasoningTextDoneEvent;
+      const details: Array<{ [k: string]: unknown }> = [];
+      if (r.text) details.push({ type: "reasoning_text", text: r.text });
+      if ((r as any).item_id)
+        details.push({ type: "reasoning_id", id: (r as any).item_id });
+      const thinking: ThinkingChatMessage = {
+        role: "thinking",
+        content: r.text,
+        reasoning_details: details,
+      };
+      return thinking;
+    }
+    default:
+      return undefined;
   }
+}
 
-  // Non-streaming final response shape
-  const resp = event as OpenAIResponse;
+function handleResponsesFinal(resp: OpenAIResponse): ChatMessage | undefined {
   if (typeof resp.output_text === "string" && resp.output_text.length > 0) {
     return { role: "assistant", content: resp.output_text };
   }
   if (Array.isArray(resp.output) && resp.output.length > 0) {
-    const first: any = resp.output[0] as any;
+    const first = resp.output[0] as any;
     if (Array.isArray(first.content) && first.content.length > 0) {
       const text = first.content
         .map((c: any) => c?.text ?? "")
@@ -483,8 +508,16 @@ export function fromResponsesChunk(
       return { role: "assistant", content: first.content };
     }
   }
-
   return undefined;
+}
+
+export function fromResponsesChunk(
+  event: ResponseStreamEvent | OpenAIResponse,
+): ChatMessage | undefined {
+  if (typeof (event as any).type === "string") {
+    return handleResponsesStreamEvent(event as ResponseStreamEvent);
+  }
+  return handleResponsesFinal(event as OpenAIResponse);
 }
 
 export function mergeReasoningDetails(
@@ -532,8 +565,34 @@ export function mergeReasoningDetails(
   return result;
 }
 
+function getTextFromMessageContent(content: MessageContent): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((p): p is TextMessagePart => p.type === "text")
+    .map((p) => p.text)
+    .join("");
+}
+
+function toResponseInputContentList(
+  parts: MessagePart[],
+): ResponseInputMessageContentList {
+  const list: ResponseInputMessageContentList = [];
+  for (const part of parts) {
+    if (part.type === "text") {
+      list.push({ type: "input_text", text: part.text });
+    } else if (part.type === "imageUrl") {
+      list.push({
+        type: "input_image",
+        image_url: part.imageUrl.url,
+        detail: "auto",
+      });
+    }
+  }
+  return list;
+}
+
 export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
-  const input: ResponseInput = [] as any;
+  const input: ResponseInput = [];
 
   const pushMessage = (
     role: "user" | "assistant" | "system" | "developer",
@@ -541,17 +600,19 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
   ) => {
     const normalizedRole: "user" | "assistant" | "system" | "developer" =
       role === "system" ? "developer" : role;
-    (input as any).push({ role: normalizedRole, content });
+    const easyMsg: EasyInputMessage = {
+      role: normalizedRole,
+      content,
+      type: "message",
+    };
+    input.push(easyMsg as ResponseInputItem);
   };
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     switch (msg.role) {
       case "system": {
-        const content =
-          typeof msg.content === "string"
-            ? msg.content
-            : (msg.content as any)?.map((p: any) => p.text || "").join("");
+        const content = getTextFromMessageContent(msg.content);
         pushMessage("developer", content || "");
         break;
       }
@@ -559,30 +620,20 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
         if (typeof msg.content === "string") {
           pushMessage("user", msg.content);
         } else if (Array.isArray(msg.content)) {
-          const parts: ResponseInputMessageContentList = [];
-          for (const part of msg.content as any[]) {
-            if (part.type === "text") {
-              parts.push({ type: "input_text", text: part.text });
-            } else if (part.type === "imageUrl") {
-              parts.push({
-                type: "input_image",
-                image_url: part.imageUrl.url,
-                detail: "auto",
-              });
-            }
-          }
+          const parts = toResponseInputContentList(
+            msg.content as MessagePart[],
+          );
           pushMessage("user", parts.length ? parts : "");
         }
         break;
       }
       case "assistant": {
-        const text =
-          typeof msg.content === "string"
-            ? msg.content
-            : (msg.content as any)?.map((p: any) => p.text || "").join("");
+        const text = getTextFromMessageContent(msg.content);
 
-        const respId = (msg as any).responsesOutputItemId as string | undefined;
-        const toolCalls = (msg as any).toolCalls as any[] | undefined;
+        const respId = msg.metadata?.responsesOutputItemId as
+          | string
+          | undefined;
+        const toolCalls = msg.toolCalls as ToolCallDelta[] | undefined;
 
         if (respId && Array.isArray(toolCalls) && toolCalls.length > 0) {
           // Emit full function_call output item
@@ -590,17 +641,17 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
           const name = tc?.function?.name as string | undefined;
           const args = tc?.function?.arguments as string | undefined;
           const call_id = tc?.id as string | undefined;
-          const functionCallItem: any = {
+          const functionCallItem: ResponseFunctionToolCall = {
             id: respId,
             type: "function_call",
             name: name || "",
             arguments: typeof args === "string" ? args : "{}",
             call_id: call_id || respId,
           };
-          (input as any).push(functionCallItem);
+          input.push(functionCallItem);
         } else if (respId) {
           // Emit full assistant output message item
-          const outputMessageItem: any = {
+          const outputMessageItem: ResponseOutputMessage = {
             id: respId,
             role: "assistant",
             type: "message",
@@ -609,10 +660,11 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
               {
                 type: "output_text",
                 text: text || "",
-              },
+                annotations: [],
+              } satisfies ResponseOutputText,
             ],
           };
-          (input as any).push(outputMessageItem);
+          input.push(outputMessageItem);
         } else {
           // Fallback to EasyInput assistant message
           pushMessage("assistant", text || "");
@@ -620,24 +672,33 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
         break;
       }
       case "tool": {
-        const call_id = (msg as any).toolCallId;
+        const call_id = msg.toolCallId;
         const output =
           typeof msg.content === "string"
             ? msg.content
             : JSON.stringify(msg.content);
-        (input as any).push({ type: "function_call_output", call_id, output });
+        const functionCallOutput: ResponseInputItem = {
+          type: "function_call_output",
+          call_id,
+          output,
+        } as ResponseInputItem;
+        input.push(functionCallOutput);
         break;
       }
       case "thinking": {
-        const details = (msg as ThinkingChatMessage).reasoning_details as
-          | any[]
-          | undefined;
-        if (details && details.length) {
+        const details = (msg as ThinkingChatMessage).reasoning_details ?? [];
+        if (details.length) {
           let id: string | undefined;
           let summaryText = "";
           let encrypted: string | undefined;
           let reasoningText = "";
-          for (const d of details) {
+          for (const raw of details as Array<Record<string, unknown>>) {
+            const d = raw as {
+              type?: string;
+              id?: string;
+              text?: string;
+              encrypted_content?: string;
+            };
             if (d.type === "reasoning_id" && d.id) id = d.id;
             else if (d.type === "encrypted_content" && d.encrypted_content)
               encrypted = d.encrypted_content;
@@ -647,8 +708,10 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
               reasoningText += d.text;
           }
           if (id) {
-            // Push full reasoning item
-            const reasoningItem: any = { type: "reasoning", id };
+            const reasoningItem: ResponseReasoningItem = {
+              id,
+              type: "reasoning",
+            } as ResponseReasoningItem;
             if (summaryText) {
               reasoningItem.summary = [
                 { type: "summary_text", text: summaryText },
@@ -662,7 +725,7 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
             if (encrypted) {
               reasoningItem.encrypted_content = encrypted;
             }
-            (input as any).push(reasoningItem);
+            input.push(reasoningItem as ResponseInputItem);
           }
         }
         break;

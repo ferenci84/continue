@@ -655,15 +655,15 @@ export const sessionSlice = createSlice({
           }
 
           // Attach Responses API output item id to the current assistant message if present
-          // fromResponsesChunk sets message.responsesOutputItemId when it sees output_item.added for messages
+          // fromResponsesChunk sets message.metadata.responsesOutputItemId when it sees output_item.added for messages
           if (
             message.role === "assistant" &&
             lastMessage.role === "assistant" &&
-            (message as any).responsesOutputItemId
+            message.metadata?.responsesOutputItemId
           ) {
-            (lastMessage as any).responsesOutputItemId = (
-              message as any
-            ).responsesOutputItemId;
+            lastMessage.metadata = lastMessage.metadata || {};
+            lastMessage.metadata.responsesOutputItemId = message.metadata
+              .responsesOutputItemId as string;
           }
 
           if (
