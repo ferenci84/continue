@@ -332,6 +332,11 @@ class OpenAI extends BaseLLM {
       top_p: chatBody.top_p,
       frequency_penalty: chatBody.frequency_penalty,
       presence_penalty: chatBody.presence_penalty,
+      reasoning: {
+        effort: "medium",
+        summary: "auto",
+      },
+      include: ["reasoning.encrypted_content"],
       stop,
     };
 

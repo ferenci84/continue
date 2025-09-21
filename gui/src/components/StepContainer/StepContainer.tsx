@@ -59,7 +59,6 @@ export default function StepContainer(props: StepContainerProps) {
 
   const shouldRenderUserMessageActions = () => {
     // Show actions for user messages when not streaming
-    console.log("last item role: ", props.item.message.role);
     return props.item.message.role === "user";
   };
 

@@ -8,6 +8,16 @@ import {
   ChatCompletionMessageParam,
   CompletionCreateParams,
 } from "openai/resources/index";
+import type {
+  Response as OpenAIResponse,
+  ResponseStreamEvent,
+  ResponseTextDeltaEvent,
+  ResponseTextDoneEvent,
+  ResponseReasoningSummaryTextDeltaEvent,
+  ResponseReasoningSummaryTextDoneEvent,
+  ResponseReasoningTextDeltaEvent,
+  ResponseReasoningTextDoneEvent,
+} from "openai/resources/responses/responses.mjs";
 
 import {
   ChatMessage,
@@ -318,62 +328,71 @@ export function fromChatCompletionChunk(
   }
 
   return undefined;
+  0;
 }
 
-export function fromResponsesChunk(event: any): ChatMessage | undefined {
-  try {
-    // Streaming delta: response.output_text.delta or similar
-    if (event?.type && String(event.type).includes("response.output_text")) {
-      const delta = event.delta ?? event.text ?? event?.value ?? "";
-      if (typeof delta === "string" && delta.length) {
-        return { role: "assistant", content: delta };
+export function fromResponsesChunk(
+  event: ResponseStreamEvent | OpenAIResponse,
+): ChatMessage | undefined {
+  // Streaming events are discriminated by a `type` string
+  if (typeof (event as any).type === "string") {
+    const e = event as ResponseStreamEvent;
+    switch (e.type) {
+      case "response.output_text.delta": {
+        const t = e satisfies ResponseTextDeltaEvent;
+        if (t.delta) return { role: "assistant", content: t.delta };
+        break;
       }
-      if (
-        delta &&
-        typeof delta === "object" &&
-        typeof delta.text === "string"
-      ) {
-        return { role: "assistant", content: delta.text };
+      case "response.output_text.done": {
+        const t = e satisfies ResponseTextDoneEvent;
+        if (t.text) return { role: "assistant", content: t.text };
+        break;
       }
-    }
-
-    // Final JSON: output_text
-    if (typeof event?.output_text === "string") {
-      return { role: "assistant", content: event.output_text };
-    }
-
-    // Final JSON: output array with content parts
-    if (Array.isArray(event?.output) && event.output.length > 0) {
-      const first = event.output[0];
-      if (Array.isArray(first.content) && first.content.length > 0) {
-        const text = first.content
-          .map((c: any) => c?.text ?? "")
-          .filter((t: any) => typeof t === "string")
-          .join("");
-        if (text) return { role: "assistant", content: text };
+      case "response.reasoning_summary_text.delta": {
+        const r = e satisfies ResponseReasoningSummaryTextDeltaEvent;
+        if (r.delta) return { role: "thinking", content: r.delta };
+        break;
       }
-      if (typeof first.content === "string") {
-        return { role: "assistant", content: first.content };
+      case "response.reasoning_summary_text.done": {
+        const r = e satisfies ResponseReasoningSummaryTextDoneEvent;
+        if (r.text) return { role: "thinking", content: r.text };
+        break;
       }
-    }
-
-    // Nested result fields
-    if (typeof event?.result?.output_text === "string") {
-      return { role: "assistant", content: event.result.output_text };
-    }
-    if (
-      Array.isArray(event?.result?.output) &&
-      event.result.output.length > 0
-    ) {
-      const first = event.result.output[0];
-      if (Array.isArray(first.content)) {
-        const text = first.content.map((c: any) => c?.text ?? "").join("");
-        if (text) return { role: "assistant", content: text };
+      case "response.reasoning_text.delta": {
+        const r = e satisfies ResponseReasoningTextDeltaEvent;
+        if (r.delta) return { role: "thinking", content: r.delta };
+        break;
       }
+      case "response.reasoning_text.done": {
+        const r = e satisfies ResponseReasoningTextDoneEvent;
+        if (r.text) return { role: "thinking", content: r.text };
+        break;
+      }
+      default:
+        break;
     }
-  } catch (e) {
-    // ignore parse errors in minimal implementation
+    return undefined;
   }
+
+  // Non-streaming final response shape
+  const resp = event as OpenAIResponse;
+  if (typeof resp.output_text === "string" && resp.output_text.length > 0) {
+    return { role: "assistant", content: resp.output_text };
+  }
+  if (Array.isArray(resp.output) && resp.output.length > 0) {
+    const first: any = resp.output[0] as any;
+    if (Array.isArray(first.content) && first.content.length > 0) {
+      const text = first.content
+        .map((c: any) => c?.text ?? "")
+        .filter((t: any) => typeof t === "string")
+        .join("");
+      if (text) return { role: "assistant", content: text };
+    }
+    if (typeof first.content === "string") {
+      return { role: "assistant", content: first.content };
+    }
+  }
+
   return undefined;
 }
 
