@@ -17,6 +17,7 @@ import {
   fromResponsesChunk,
   LlmApiRequestType,
   toChatBody,
+  toResponsesInput,
 } from "../openaiTypeConverters.js";
 import {
   ResponseInput,
@@ -314,24 +315,19 @@ class OpenAI extends BaseLLM {
     options: CompletionOptions,
     messages: ChatMessage[],
   ): any {
-    // Start from chat-style body to reuse shared option mapping
-    const chatBody = toChatBody(messages, options);
-
-    // Enforce stop token limits similar to chat path
+    // Specialized conversion for Responses API (avoid Chat Completions types)
     const stop = options.stop?.slice(0, this.getMaxStopWords());
+    const model = options.model;
 
-    // Map system->developer for o-series / gpt-5
-    const model = chatBody.model as string;
-    const input = formatMessageForO1OrGpt5ForResponses(chatBody.messages);
+    const input = toResponsesInput(messages);
 
     const body: any = {
       model,
       input,
-      // Common generation controls carried over for parity
-      temperature: chatBody.temperature,
-      top_p: chatBody.top_p,
-      frequency_penalty: chatBody.frequency_penalty,
-      presence_penalty: chatBody.presence_penalty,
+      temperature: options.temperature,
+      top_p: options.topP,
+      frequency_penalty: options.frequencyPenalty,
+      presence_penalty: options.presencePenalty,
       reasoning: {
         effort: "medium",
         summary: "auto",
@@ -340,12 +336,10 @@ class OpenAI extends BaseLLM {
       stop,
     };
 
-    // Responses API expects max_output_tokens
     if (typeof options.maxTokens === "number") {
       body.max_output_tokens = options.maxTokens;
     }
 
-    // o1 models do not support streaming
     if (model === "o1") {
       body.stream = false;
     }

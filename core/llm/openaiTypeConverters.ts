@@ -17,6 +17,9 @@ import type {
   ResponseReasoningSummaryTextDoneEvent,
   ResponseReasoningTextDeltaEvent,
   ResponseReasoningTextDoneEvent,
+  ResponseInput,
+  ResponseInputItem,
+  ResponseInputMessageContentList,
 } from "openai/resources/responses/responses.mjs";
 
 import {
@@ -328,7 +331,6 @@ export function fromChatCompletionChunk(
   }
 
   return undefined;
-  0;
 }
 
 export function fromResponsesChunk(
@@ -339,34 +341,93 @@ export function fromResponsesChunk(
     const e = event as ResponseStreamEvent;
     switch (e.type) {
       case "response.output_text.delta": {
-        const t = e satisfies ResponseTextDeltaEvent;
+        const t = e as ResponseTextDeltaEvent;
         if (t.delta) return { role: "assistant", content: t.delta };
         break;
       }
       case "response.output_text.done": {
-        const t = e satisfies ResponseTextDoneEvent;
+        const t = e as ResponseTextDoneEvent;
         if (t.text) return { role: "assistant", content: t.text };
         break;
       }
-      case "response.reasoning_summary_text.delta": {
-        const r = e satisfies ResponseReasoningSummaryTextDeltaEvent;
-        if (r.delta) return { role: "thinking", content: r.delta };
+      case "response.output_item.added": {
+        const t = e as any;
+        const item = (t.item as any) || {};
+        if (item.type === "reasoning") {
+          const details: any[] = [];
+          if (item.id) details.push({ type: "reasoning_id", id: item.id });
+          if (
+            typeof item.encrypted_content === "string" &&
+            item.encrypted_content
+          ) {
+            details.push({
+              type: "encrypted_content",
+              encrypted_content: item.encrypted_content,
+            });
+          }
+          if (Array.isArray(item.summary)) {
+            for (const part of item.summary) {
+              if (
+                part?.type === "summary_text" &&
+                typeof part.text === "string"
+              ) {
+                details.push({ type: "summary_text", text: part.text });
+              }
+            }
+          }
+          return {
+            role: "thinking",
+            content: "",
+            reasoning_details: details,
+          } as ThinkingChatMessage;
+        }
         break;
+      }
+      case "response.reasoning_summary_text.delta": {
+        const r = e as ResponseReasoningSummaryTextDeltaEvent;
+        const details: any[] = [{ type: "summary_text", text: r.delta }];
+        if ((r as any).item_id)
+          details.push({ type: "reasoning_id", id: (r as any).item_id });
+        return {
+          role: "thinking",
+          content: r.delta,
+          reasoning_details: details,
+        } as ThinkingChatMessage;
       }
       case "response.reasoning_summary_text.done": {
-        const r = e satisfies ResponseReasoningSummaryTextDoneEvent;
-        if (r.text) return { role: "thinking", content: r.text };
-        break;
+        const r = e as ResponseReasoningSummaryTextDoneEvent;
+        const details: any[] = [];
+        if (r.text) details.push({ type: "summary_text", text: r.text });
+        if ((r as any).item_id)
+          details.push({ type: "reasoning_id", id: (r as any).item_id });
+        return {
+          role: "thinking",
+          content: r.text,
+          reasoning_details: details,
+        } as ThinkingChatMessage;
       }
       case "response.reasoning_text.delta": {
-        const r = e satisfies ResponseReasoningTextDeltaEvent;
-        if (r.delta) return { role: "thinking", content: r.delta };
-        break;
+        const r = e as ResponseReasoningTextDeltaEvent;
+        const details: any[] = [{ type: "reasoning_text", text: r.delta }];
+        if ((r as any).item_id)
+          details.push({ type: "reasoning_id", id: (r as any).item_id });
+        return {
+          role: "thinking",
+          content: r.delta,
+          reasoning_details: details,
+        } as ThinkingChatMessage;
       }
       case "response.reasoning_text.done": {
-        const r = e satisfies ResponseReasoningTextDoneEvent;
-        if (r.text) return { role: "thinking", content: r.text };
-        break;
+        const r = e as ResponseReasoningTextDoneEvent;
+        const details: any[] = [];
+        if (r.text) details.push({ type: "reasoning_text", text: r.text });
+        if ((r as any).item_id)
+          details.push({ type: "reasoning_id", id: (r as any).item_id });
+        return {
+          role: "thinking",
+          content: r.text,
+          reasoning_details: details,
+        } as ThinkingChatMessage;
       }
       default:
         break;
@@ -439,6 +500,110 @@ export function mergeReasoningDetails(
   }
 
   return result;
+}
+
+export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
+  const input: ResponseInput = [] as any;
+
+  const pushMessage = (
+    role: "user" | "assistant" | "system" | "developer",
+    content: string | ResponseInputMessageContentList,
+  ) => {
+    const normalizedRole: "user" | "assistant" | "system" | "developer" =
+      role === "system" ? "developer" : role;
+    (input as any).push({ role: normalizedRole, content });
+  };
+
+  for (const msg of messages) {
+    switch (msg.role) {
+      case "system": {
+        const content =
+          typeof msg.content === "string"
+            ? msg.content
+            : (msg.content as any)?.map((p: any) => p.text || "").join("");
+        pushMessage("developer", content || "");
+        break;
+      }
+      case "user": {
+        if (typeof msg.content === "string") {
+          pushMessage("user", msg.content);
+        } else if (Array.isArray(msg.content)) {
+          const parts: ResponseInputMessageContentList = [];
+          for (const part of msg.content as any[]) {
+            if (part.type === "text") {
+              parts.push({ type: "input_text", text: part.text });
+            } else if (part.type === "imageUrl") {
+              parts.push({
+                type: "input_image",
+                image_url: part.imageUrl.url,
+                detail: "auto",
+              });
+            }
+          }
+          pushMessage("user", parts.length ? parts : "");
+        }
+        break;
+      }
+      case "assistant": {
+        const text =
+          typeof msg.content === "string"
+            ? msg.content
+            : (msg.content as any)?.map((p: any) => p.text || "").join("");
+        pushMessage("assistant", text || "");
+        break;
+      }
+      case "tool": {
+        // Map tool output to function_call_output item
+        const call_id = (msg as any).toolCallId;
+        const output =
+          typeof msg.content === "string"
+            ? msg.content
+            : JSON.stringify(msg.content);
+        (input as any).push({ type: "function_call_output", call_id, output });
+        break;
+      }
+      case "thinking": {
+        const details = (msg as ThinkingChatMessage).reasoning_details as
+          | any[]
+          | undefined;
+        if (details && details.length) {
+          let id: string | undefined;
+          let summaryText = "";
+          let encrypted: string | undefined;
+          let reasoningText = "";
+          for (const d of details) {
+            if (d.type === "reasoning_id" && d.id) id = d.id;
+            else if (d.type === "encrypted_content" && d.encrypted_content)
+              encrypted = d.encrypted_content;
+            else if (d.type === "summary_text" && typeof d.text === "string")
+              summaryText += d.text;
+            else if (d.type === "reasoning_text" && typeof d.text === "string")
+              reasoningText += d.text;
+          }
+          if (id) {
+            const reasoningItem: any = { type: "reasoning", id };
+            if (summaryText) {
+              reasoningItem.summary = [
+                { type: "summary_text", text: summaryText },
+              ];
+            }
+            if (reasoningText) {
+              reasoningItem.content = [
+                { type: "reasoning_text", text: reasoningText },
+              ];
+            }
+            if (encrypted) {
+              reasoningItem.encrypted_content = encrypted;
+            }
+            (input as any).push(reasoningItem);
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return input;
 }
 
 export type LlmApiRequestType =
