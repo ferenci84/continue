@@ -381,6 +381,36 @@ export function fromResponsesChunk(
             reasoning_details: details,
           } as ThinkingChatMessage;
         }
+        // capture assistant output message item id as soon as it's added
+        if (item.type === "message" && typeof item.id === "string") {
+          return {
+            role: "assistant",
+            content: "",
+            responsesOutputItemId: item.id,
+          } as any;
+        }
+        // capture function_call output item and surface as tool call stub
+        if (item.type === "function_call" && typeof item.id === "string") {
+          const name = item.name as string | undefined;
+          const args =
+            typeof item.arguments === "string" ? item.arguments : "{}";
+          const call_id = item.call_id as string | undefined;
+          const toolCall = name
+            ? [
+                {
+                  id: call_id || item.id,
+                  type: "function",
+                  function: { name, arguments: args },
+                },
+              ]
+            : [];
+          return {
+            role: "assistant",
+            content: "",
+            toolCalls: toolCall,
+            responsesOutputItemId: item.id,
+          } as any;
+        }
         break;
       }
       case "response.reasoning_summary_text.delta": {
@@ -514,7 +544,8 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
     (input as any).push({ role: normalizedRole, content });
   };
 
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     switch (msg.role) {
       case "system": {
         const content =
@@ -553,7 +584,6 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
         break;
       }
       case "tool": {
-        // Map tool output to function_call_output item
         const call_id = (msg as any).toolCallId;
         const output =
           typeof msg.content === "string"
@@ -581,6 +611,7 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
               reasoningText += d.text;
           }
           if (id) {
+            // Push full reasoning item
             const reasoningItem: any = { type: "reasoning", id };
             if (summaryText) {
               reasoningItem.summary = [
@@ -596,6 +627,37 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
               reasoningItem.encrypted_content = encrypted;
             }
             (input as any).push(reasoningItem);
+
+            // Try to pair with following assistant output item if present
+            const next = messages[i + 1] as any;
+            if (
+              next &&
+              next.role === "assistant" &&
+              typeof next.responsesOutputItemId === "string"
+            ) {
+              const textNext =
+                typeof next.content === "string"
+                  ? next.content
+                  : (next.content as any)
+                      ?.map((p: any) => p.text || "")
+                      .join("");
+
+              const outputMessageItem: any = {
+                id: next.responsesOutputItemId,
+                role: "assistant",
+                type: "message",
+                status: "completed",
+                content: [
+                  {
+                    type: "output_text",
+                    text: textNext || "",
+                  },
+                ],
+              };
+              (input as any).push(outputMessageItem);
+              i++; // consume the next assistant message so we don't add it again as EasyInput
+              break;
+            }
           }
         }
         break;
