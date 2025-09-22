@@ -355,8 +355,43 @@ function handleResponsesStreamEvent(
       return t.delta ? { role: "assistant", content: t.delta } : undefined;
     }
     case "response.output_text.done": {
-      const t = e as ResponseTextDoneEvent;
-      return t.text ? { role: "assistant", content: t.text } : undefined;
+      // Do not emit full text at done; we already streamed deltas
+      // Emitting the full text here would duplicate content
+      return undefined;
+    }
+    case "response.function_call_arguments.delta": {
+      const ev: any = e as any;
+      const item = ev.item || {};
+      const name =
+        item && typeof item.name === "string" ? item.name : undefined;
+      const argDelta =
+        typeof ev.delta === "string"
+          ? ev.delta
+          : (ev.delta?.arguments ?? ev.arguments);
+      if (typeof argDelta === "string" && argDelta.length > 0) {
+        const call_id =
+          (item?.call_id as string | undefined) ||
+          (item?.id as string | undefined) ||
+          "";
+        const toolCalls: ToolCallDelta[] = [
+          {
+            id: call_id,
+            type: "function",
+            function: { name: name || "", arguments: argDelta },
+          },
+        ];
+        const assistant: AssistantChatMessage = {
+          role: "assistant",
+          content: "",
+          toolCalls,
+        };
+        return assistant;
+      }
+      return undefined;
+    }
+    case "response.function_call_arguments.done": {
+      // No-op; final value should already be assembled from deltas
+      return undefined;
     }
     case "response.output_item.added": {
       const item = (e as any).item as {
@@ -411,7 +446,8 @@ function handleResponsesStreamEvent(
       }
       if (item.type === "function_call" && typeof item.id === "string") {
         const name = item.name as string | undefined;
-        const args = typeof item.arguments === "string" ? item.arguments : "{}";
+        // At added time, arguments may be empty and will stream via delta events; default to empty string
+        const args = typeof item.arguments === "string" ? item.arguments : "";
         const call_id = item.call_id as string | undefined;
         const toolCalls: ToolCallDelta[] = name
           ? [
@@ -432,6 +468,7 @@ function handleResponsesStreamEvent(
       }
       return undefined;
     }
+
     case "response.reasoning_summary_text.delta": {
       const r = e as ResponseReasoningSummaryTextDeltaEvent;
       const details: Array<{ [k: string]: unknown }> = [
