@@ -603,7 +603,11 @@ class OpenAI extends BaseLLM {
     for await (const evt of streamSse(response)) {
       try {
         const msg = fromResponsesChunk(evt);
-        if (msg) {
+        if (Array.isArray(msg)) {
+          for (const m of msg) {
+            if (m) yield m;
+          }
+        } else if (msg) {
           yield msg;
         }
       } catch {

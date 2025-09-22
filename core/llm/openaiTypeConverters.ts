@@ -346,186 +346,211 @@ export function fromChatCompletionChunk(
   return undefined;
 }
 
+function handleTextDeltaEvent(
+  e: ResponseTextDeltaEvent,
+): ChatMessage | undefined {
+  return e.delta ? { role: "assistant", content: e.delta } : undefined;
+}
+
+function handleFunctionCallArgsDelta(e: any): ChatMessage | undefined {
+  const ev: any = e as any;
+  const item = ev.item || {};
+  const name = item && typeof item.name === "string" ? item.name : undefined;
+  const argDelta =
+    typeof ev.delta === "string"
+      ? ev.delta
+      : (ev.delta?.arguments ?? ev.arguments);
+  if (typeof argDelta === "string" && argDelta.length > 0) {
+    const call_id =
+      (item?.call_id as string | undefined) ||
+      (item?.id as string | undefined) ||
+      "";
+    const toolCalls: ToolCallDelta[] = [
+      {
+        id: call_id,
+        type: "function",
+        function: { name: name || "", arguments: argDelta },
+      },
+    ];
+    const assistant: AssistantChatMessage = {
+      role: "assistant",
+      content: "",
+      toolCalls,
+    };
+    return assistant;
+  }
+  return undefined;
+}
+
+function handleOutputItemAdded(
+  e: ResponseStreamEvent,
+): ChatMessage | undefined {
+  const item = (e as any).item as {
+    type?: string;
+    id?: string;
+    name?: string;
+    arguments?: string;
+    call_id?: string;
+    summary?: Array<{ type: string; text: string }>;
+    encrypted_content?: string;
+  };
+  if (!item || !item.type) return undefined;
+  if (item.type === "reasoning") {
+    const details: Array<{ [k: string]: unknown }> = [];
+    if (item.id) details.push({ type: "reasoning_id", id: item.id });
+    if (typeof item.encrypted_content === "string" && item.encrypted_content) {
+      details.push({
+        type: "encrypted_content",
+        encrypted_content: item.encrypted_content,
+      });
+    }
+    if (Array.isArray(item.summary)) {
+      for (const part of item.summary) {
+        if (part?.type === "summary_text" && typeof part.text === "string") {
+          details.push({ type: "summary_text", text: part.text });
+        }
+      }
+    }
+    const thinking: ThinkingChatMessage = {
+      role: "thinking",
+      content: "",
+      reasoning_details: details,
+      metadata: {
+        reasoningId: item.id as string,
+        encrypted_content: item.encrypted_content as string | undefined,
+      },
+    };
+    return thinking;
+  }
+  if (item.type === "message" && typeof item.id === "string") {
+    return {
+      role: "assistant",
+      content: "",
+      metadata: { responsesOutputItemId: item.id },
+    };
+  }
+  if (item.type === "function_call" && typeof item.id === "string") {
+    const name = item.name as string | undefined;
+    const args = typeof item.arguments === "string" ? item.arguments : "";
+    const call_id = item.call_id as string | undefined;
+    const toolCalls: ToolCallDelta[] = name
+      ? [
+          {
+            id: call_id || (item.id as string),
+            type: "function",
+            function: { name, arguments: args },
+          },
+        ]
+      : [];
+    const assistant: AssistantChatMessage = {
+      role: "assistant",
+      content: "",
+      toolCalls,
+      metadata: { responsesOutputItemId: item.id as string },
+    };
+    return assistant;
+  }
+  return undefined;
+}
+
+function handleReasoningSummaryDelta(
+  e: ResponseReasoningSummaryTextDeltaEvent,
+): ChatMessage | undefined {
+  const details: Array<{ [k: string]: unknown }> = [
+    { type: "summary_text", text: e.delta },
+  ];
+  if ((e as any).item_id)
+    details.push({ type: "reasoning_id", id: (e as any).item_id });
+  const thinking: ThinkingChatMessage = {
+    role: "thinking",
+    content: e.delta,
+    reasoning_details: details,
+  };
+  return thinking;
+}
+
+function handleReasoningSummaryDone(
+  e: ResponseReasoningSummaryTextDoneEvent,
+): ChatMessage | undefined {
+  const details: Array<{ [k: string]: unknown }> = [];
+  if (e.text) details.push({ type: "summary_text", text: e.text });
+  if ((e as any).item_id)
+    details.push({ type: "reasoning_id", id: (e as any).item_id });
+  const thinking: ThinkingChatMessage = {
+    role: "thinking",
+    content: e.text,
+    reasoning_details: details,
+  };
+  return thinking;
+}
+
+function handleReasoningTextDelta(
+  e: ResponseReasoningTextDeltaEvent,
+): ChatMessage | undefined {
+  const details: Array<{ [k: string]: unknown }> = [
+    { type: "reasoning_text", text: e.delta },
+  ];
+  if ((e as any).item_id)
+    details.push({ type: "reasoning_id", id: (e as any).item_id });
+  const thinking: ThinkingChatMessage = {
+    role: "thinking",
+    content: e.delta,
+    reasoning_details: details,
+  };
+  return thinking;
+}
+
+function handleReasoningTextDone(
+  e: ResponseReasoningTextDoneEvent,
+): ChatMessage | undefined {
+  const details: Array<{ [k: string]: unknown }> = [];
+  if (e.text) details.push({ type: "reasoning_text", text: e.text });
+  if ((e as any).item_id)
+    details.push({ type: "reasoning_id", id: (e as any).item_id });
+  const thinking: ThinkingChatMessage = {
+    role: "thinking",
+    content: e.text,
+    reasoning_details: details,
+  };
+  return thinking;
+}
+
 function handleResponsesStreamEvent(
   e: ResponseStreamEvent,
 ): ChatMessage | undefined {
-  switch (e.type) {
-    case "response.output_text.delta": {
-      const t = e as ResponseTextDeltaEvent;
-      return t.delta ? { role: "assistant", content: t.delta } : undefined;
-    }
-    case "response.output_text.done": {
-      // Do not emit full text at done; we already streamed deltas
-      // Emitting the full text here would duplicate content
-      return undefined;
-    }
-    case "response.function_call_arguments.delta": {
-      const ev: any = e as any;
-      const item = ev.item || {};
-      const name =
-        item && typeof item.name === "string" ? item.name : undefined;
-      const argDelta =
-        typeof ev.delta === "string"
-          ? ev.delta
-          : (ev.delta?.arguments ?? ev.arguments);
-      if (typeof argDelta === "string" && argDelta.length > 0) {
-        const call_id =
-          (item?.call_id as string | undefined) ||
-          (item?.id as string | undefined) ||
-          "";
-        const toolCalls: ToolCallDelta[] = [
-          {
-            id: call_id,
-            type: "function",
-            function: { name: name || "", arguments: argDelta },
-          },
-        ];
-        const assistant: AssistantChatMessage = {
-          role: "assistant",
-          content: "",
-          toolCalls,
-        };
-        return assistant;
-      }
-      return undefined;
-    }
-    case "response.function_call_arguments.done": {
-      // No-op; final value should already be assembled from deltas
-      return undefined;
-    }
-    case "response.output_item.added": {
-      const item = (e as any).item as {
-        type?: string;
-        id?: string;
-        name?: string;
-        arguments?: string;
-        call_id?: string;
-        summary?: Array<{ type: string; text: string }>;
-        encrypted_content?: string;
-      };
-      if (!item || !item.type) return undefined;
-      if (item.type === "reasoning") {
-        const details: Array<{ [k: string]: unknown }> = [];
-        if (item.id) details.push({ type: "reasoning_id", id: item.id });
-        if (
-          typeof item.encrypted_content === "string" &&
-          item.encrypted_content
-        ) {
-          details.push({
-            type: "encrypted_content",
-            encrypted_content: item.encrypted_content,
-          });
-        }
-        if (Array.isArray(item.summary)) {
-          for (const part of item.summary) {
-            if (
-              part?.type === "summary_text" &&
-              typeof part.text === "string"
-            ) {
-              details.push({ type: "summary_text", text: part.text });
-            }
-          }
-        }
-        const thinking: ThinkingChatMessage = {
-          role: "thinking",
-          content: "",
-          reasoning_details: details,
-          metadata: {
-            reasoningId: item.id as string,
-            encrypted_content: item.encrypted_content as string | undefined,
-          },
-        };
-        return thinking;
-      }
-      if (item.type === "message" && typeof item.id === "string") {
-        return {
-          role: "assistant",
-          content: "",
-          metadata: { responsesOutputItemId: item.id },
-        };
-      }
-      if (item.type === "function_call" && typeof item.id === "string") {
-        const name = item.name as string | undefined;
-        // At added time, arguments may be empty and will stream via delta events; default to empty string
-        const args = typeof item.arguments === "string" ? item.arguments : "";
-        const call_id = item.call_id as string | undefined;
-        const toolCalls: ToolCallDelta[] = name
-          ? [
-              {
-                id: call_id || (item.id as string),
-                type: "function",
-                function: { name, arguments: args },
-              },
-            ]
-          : [];
-        const assistant: AssistantChatMessage = {
-          role: "assistant",
-          content: "",
-          toolCalls,
-          metadata: { responsesOutputItemId: item.id as string },
-        };
-        return assistant;
-      }
-      return undefined;
-    }
-
-    case "response.reasoning_summary_text.delta": {
-      const r = e as ResponseReasoningSummaryTextDeltaEvent;
-      const details: Array<{ [k: string]: unknown }> = [
-        { type: "summary_text", text: r.delta },
-      ];
-      if ((r as any).item_id)
-        details.push({ type: "reasoning_id", id: (r as any).item_id });
-      const thinking: ThinkingChatMessage = {
-        role: "thinking",
-        content: r.delta,
-        reasoning_details: details,
-      };
-      return thinking;
-    }
-    case "response.reasoning_summary_text.done": {
-      const r = e as ResponseReasoningSummaryTextDoneEvent;
-      const details: Array<{ [k: string]: unknown }> = [];
-      if (r.text) details.push({ type: "summary_text", text: r.text });
-      if ((r as any).item_id)
-        details.push({ type: "reasoning_id", id: (r as any).item_id });
-      const thinking: ThinkingChatMessage = {
-        role: "thinking",
-        content: r.text,
-        reasoning_details: details,
-      };
-      return thinking;
-    }
-    case "response.reasoning_text.delta": {
-      const r = e as ResponseReasoningTextDeltaEvent;
-      const details: Array<{ [k: string]: unknown }> = [
-        { type: "reasoning_text", text: r.delta },
-      ];
-      if ((r as any).item_id)
-        details.push({ type: "reasoning_id", id: (r as any).item_id });
-      const thinking: ThinkingChatMessage = {
-        role: "thinking",
-        content: r.delta,
-        reasoning_details: details,
-      };
-      return thinking;
-    }
-    case "response.reasoning_text.done": {
-      const r = e as ResponseReasoningTextDoneEvent;
-      const details: Array<{ [k: string]: unknown }> = [];
-      if (r.text) details.push({ type: "reasoning_text", text: r.text });
-      if ((r as any).item_id)
-        details.push({ type: "reasoning_id", id: (r as any).item_id });
-      const thinking: ThinkingChatMessage = {
-        role: "thinking",
-        content: r.text,
-        reasoning_details: details,
-      };
-      return thinking;
-    }
-    default:
-      return undefined;
+  const t = (e as any).type as string;
+  if (t === "response.output_text.delta") {
+    return handleTextDeltaEvent(e as ResponseTextDeltaEvent);
   }
+  if (t === "response.output_text.done") {
+    return undefined; // avoid duplicate final text
+  }
+  if (t === "response.function_call_arguments.delta") {
+    return handleFunctionCallArgsDelta(e);
+  }
+  if (t === "response.function_call_arguments.done") {
+    return undefined;
+  }
+  if (t === "response.output_item.added") {
+    return handleOutputItemAdded(e);
+  }
+  if (t === "response.reasoning_summary_text.delta") {
+    return handleReasoningSummaryDelta(
+      e as ResponseReasoningSummaryTextDeltaEvent,
+    );
+  }
+  if (t === "response.reasoning_summary_text.done") {
+    return handleReasoningSummaryDone(
+      e as ResponseReasoningSummaryTextDoneEvent,
+    );
+  }
+  if (t === "response.reasoning_text.delta") {
+    return handleReasoningTextDelta(e as ResponseReasoningTextDeltaEvent);
+  }
+  if (t === "response.reasoning_text.done") {
+    return handleReasoningTextDone(e as ResponseReasoningTextDoneEvent);
+  }
+  return undefined;
 }
 
 function handleResponsesFinal(
