@@ -23,6 +23,8 @@ import {
   ResponseInput,
   ResponseInputItem,
   ResponseInputMessageContentList,
+  ResponseCreateParamsBase,
+  Tool as ResponsesTool,
 } from "openai/resources/responses/responses.mjs";
 
 const NON_CHAT_MODELS = [
@@ -314,27 +316,45 @@ class OpenAI extends BaseLLM {
   protected _convertArgsResponses(
     options: CompletionOptions,
     messages: ChatMessage[],
-  ): any {
-    // Specialized conversion for Responses API (avoid Chat Completions types)
-    const stop = options.stop?.slice(0, this.getMaxStopWords());
+  ): ResponseCreateParamsBase {
+    // Specialized conversion for Responses API (strongly typed body)
     const model = options.model;
 
     const input = toResponsesInput(messages);
 
-    const body: any = {
+    const body: ResponseCreateParamsBase = {
       model,
       input,
-      temperature: options.temperature,
-      top_p: options.topP,
-      frequency_penalty: options.frequencyPenalty,
-      presence_penalty: options.presencePenalty,
+      temperature: options.temperature ?? null,
+      top_p: options.topP ?? null,
       reasoning: {
         effort: "medium",
         summary: "auto",
       },
       include: ["reasoning.encrypted_content"],
-      stop,
     };
+
+    // Tools support for Responses API (schema differs from Chat Completions)
+    if (options.tools?.length) {
+      body.tools = options.tools
+        .filter((t) => !t.type || t.type === "function")
+        .map(
+          (t) =>
+            ({
+              type: "function",
+              name: t.function.name,
+              description: t.function.description ?? undefined,
+              parameters: t.function.parameters ?? undefined,
+              strict: t.function.strict ?? undefined,
+            }) as ResponsesTool,
+        );
+    }
+    if (options.toolChoice) {
+      body.tool_choice = {
+        type: "function",
+        name: options.toolChoice.function.name,
+      } as ResponseCreateParamsBase["tool_choice"];
+    }
 
     if (typeof options.maxTokens === "number") {
       body.max_output_tokens = options.maxTokens;

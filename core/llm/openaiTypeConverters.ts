@@ -711,6 +711,7 @@ export function toResponsesInput(messages: ChatMessage[]): ResponseInput {
             const reasoningItem: ResponseReasoningItem = {
               id,
               type: "reasoning",
+              summary: [],
             } as ResponseReasoningItem;
             if (summaryText) {
               reasoningItem.summary = [
