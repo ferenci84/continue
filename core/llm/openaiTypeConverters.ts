@@ -528,29 +528,121 @@ function handleResponsesStreamEvent(
   }
 }
 
-function handleResponsesFinal(resp: OpenAIResponse): ChatMessage | undefined {
+function handleResponsesFinal(
+  resp: OpenAIResponse,
+): ChatMessage | ChatMessage[] | undefined {
+  // Prefer structured output items when present
+  if (Array.isArray(resp.output) && resp.output.length > 0) {
+    const result: ChatMessage[] = [];
+    for (const raw of resp.output as any[]) {
+      const item = raw as any;
+      if (!item || typeof item !== "object") continue;
+      if (item.type === "reasoning") {
+        const details: Array<{ [k: string]: unknown }> = [];
+        if (typeof item.id === "string") {
+          details.push({ type: "reasoning_id", id: item.id });
+        }
+        if (Array.isArray(item.summary)) {
+          for (const s of item.summary) {
+            if (s?.type === "summary_text" && typeof s.text === "string") {
+              details.push({ type: "summary_text", text: s.text });
+            }
+          }
+        }
+        if (Array.isArray(item.content)) {
+          for (const c of item.content) {
+            if (c?.type === "reasoning_text" && typeof c.text === "string") {
+              details.push({ type: "reasoning_text", text: c.text });
+            }
+          }
+        }
+        if (
+          typeof item.encrypted_content === "string" &&
+          item.encrypted_content
+        ) {
+          details.push({
+            type: "encrypted_content",
+            encrypted_content: item.encrypted_content,
+          });
+        }
+        const thinking: ThinkingChatMessage = {
+          role: "thinking",
+          content: "",
+          reasoning_details: details,
+          metadata: {
+            reasoningId: item.id as string,
+            encrypted_content: item.encrypted_content as string | undefined,
+          },
+        };
+        result.push(thinking);
+        continue;
+      }
+      if (item.type === "message") {
+        let text = "";
+        if (Array.isArray(item.content)) {
+          text = (item.content as any[])
+            .map((c) => (typeof c?.text === "string" ? c.text : ""))
+            .join("");
+        } else if (typeof item.content === "string") {
+          text = item.content;
+        }
+        const assistant: AssistantChatMessage = {
+          role: "assistant",
+          content: text || "",
+          metadata:
+            typeof item.id === "string"
+              ? { responsesOutputItemId: item.id }
+              : undefined,
+        };
+        result.push(assistant);
+        continue;
+      }
+      if (item.type === "function_call") {
+        const name = item.name as string | undefined;
+        const args =
+          typeof item.arguments === "string"
+            ? item.arguments
+            : JSON.stringify(item.arguments ?? "");
+        const call_id =
+          (item.call_id as string | undefined) ||
+          (item.id as string | undefined) ||
+          "";
+        const toolCalls: ToolCallDelta[] = name
+          ? [
+              {
+                id: call_id,
+                type: "function",
+                function: { name, arguments: args || "" },
+              },
+            ]
+          : [];
+        const assistant: AssistantChatMessage = {
+          role: "assistant",
+          content: "",
+          toolCalls,
+          metadata:
+            typeof item.id === "string"
+              ? { responsesOutputItemId: item.id }
+              : undefined,
+        };
+        result.push(assistant);
+        continue;
+      }
+    }
+    if (result.length > 0) return result;
+  }
+
+  // Fallback to output_text when no structured output is present
   if (typeof resp.output_text === "string" && resp.output_text.length > 0) {
     return { role: "assistant", content: resp.output_text };
   }
-  if (Array.isArray(resp.output) && resp.output.length > 0) {
-    const first = resp.output[0] as any;
-    if (Array.isArray(first.content) && first.content.length > 0) {
-      const text = first.content
-        .map((c: any) => c?.text ?? "")
-        .filter((t: any) => typeof t === "string")
-        .join("");
-      if (text) return { role: "assistant", content: text };
-    }
-    if (typeof first.content === "string") {
-      return { role: "assistant", content: first.content };
-    }
-  }
+
   return undefined;
 }
 
 export function fromResponsesChunk(
   event: ResponseStreamEvent | OpenAIResponse,
-): ChatMessage | undefined {
+): ChatMessage | ChatMessage[] | undefined {
   if (typeof (event as any).type === "string") {
     return handleResponsesStreamEvent(event as ResponseStreamEvent);
   }

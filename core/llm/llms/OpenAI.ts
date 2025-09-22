@@ -578,9 +578,13 @@ class OpenAI extends BaseLLM {
 
     // o1 does not support streaming
     if (body.model === "o1") {
-      const single = await this._responses(messages, signal, options);
-      if (single) {
-        yield single;
+      const res = await this._responses(messages, signal, options);
+      if (Array.isArray(res)) {
+        for (const m of res) {
+          if (m) yield m;
+        }
+      } else if (res) {
+        yield res;
       }
       return;
     }
@@ -612,7 +616,7 @@ class OpenAI extends BaseLLM {
     messages: ChatMessage[],
     signal: AbortSignal,
     options: CompletionOptions,
-  ): Promise<ChatMessage> {
+  ): Promise<ChatMessage | ChatMessage[]> {
     if (!this.isOSeriesOrGpt5Model(options.model)) {
       // Minimal draft: only handle supported models for now
       return { role: "assistant", content: "" };
